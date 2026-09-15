@@ -42,7 +42,7 @@ export default function RootLayout() {
 
     // Logged in 
     else if (session && inAuthGroup) {
-      router.replace('/work')
+      router.replace('/')
     }
   }, [session, loading, segments])
 
