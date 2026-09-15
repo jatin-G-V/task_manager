@@ -11,3 +11,8 @@ def health_check():
 def test_db():
     response = supabase.table("tasks").select("*").execute()
     return response.data
+
+@app.get("/users")
+def get_users():
+    response = supabase.table("user_profile").select("*").execute()
+    return response.data

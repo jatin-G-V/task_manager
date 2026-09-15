@@ -1,18 +1,43 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router';
-import * as SplashScreen from 'expo-splash-screen';
-import { useColorScheme } from 'react-native';
+import { useEffect, useState } from 'react';
+import { Slot, useRouter, useSegments } from 'expo-router';
+import { supabase } from '../lib/supabase';
+import { LogoutButton } from '../components/LogoutButton'
 
-import { AnimatedSplashOverlay } from '@/components/animated-icon';
-import AppTabs from '@/components/app-tabs';
+// apne screen ke JSX ke andar:
 
-SplashScreen.preventAutoHideAsync();
+export default function RootLayout() {
+  const [session, setSession] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const router = useRouter();
+  const segments = useSegments();
 
-export default function TabLayout() {
-  const colorScheme = useColorScheme();
-  return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <AnimatedSplashOverlay />
-      <AppTabs />
-    </ThemeProvider>
-  );
+  useEffect(() => {
+    // app khulte hi current session check karo
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setLoading(false);
+    });
+
+    // login/logout hone par session update karo
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (loading) return;
+
+    const inAuthGroup = segments[0] === 'login' || segments[0] === 'signup';
+
+    if (!session && !inAuthGroup) {
+      router.replace('/login'); // logged in nahi hai, login pe bhejo
+    } else if (session && inAuthGroup) {
+      router.replace('/'); // logged in hai, dashboard pe bhejo
+    }
+  }, [session, loading, segments]);
+
+  if (loading) return null; // ya ek chhota loading spinner
+  return <Slot />;
 }
