@@ -47,10 +47,7 @@ export default function BottomTabBar() {
       ]}
     >
       {tabs.map(tab => {
-        const active =
-          tab.id === 'home'
-            ? pathname === '/'
-            : pathname === tab.screen
+        const active = pathname === tab.screen
 
         const Icon = tab.icon
 
