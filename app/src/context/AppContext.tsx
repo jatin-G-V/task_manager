@@ -14,7 +14,7 @@ import type {
 } from '../types'
 
 import { lightTheme, darkTheme } from '../theme'
-import { initialTasks, initialHistory } from '../data'
+import { initialHistory } from '../data'
 import { supabase } from '../lib/supabase'
 
 const AppContext = createContext<AppContextType | null>(null)
@@ -33,7 +33,70 @@ export function AppProvider({ children }: AppProviderProps) {
   // -----------------------------
   // Tasks
   // -----------------------------
-  const [tasks, setTasks] = useState<TaskStore>(initialTasks)
+  const [tasks, setTasks] = useState<TaskStore>({
+    work: [],
+    personal: [],
+    leisure: [],
+  })
+
+  // Fetch real tasks from Supabase — no demo/mock data
+  const fetchTasks = async () => {
+    const { data: { user: authUser } } = await supabase.auth.getUser()
+    if (!authUser) {
+      setTasks({ work: [], personal: [], leisure: [] })
+      return
+    }
+
+    const { data, error } = await supabase
+      .from('tasks')
+      .select('*')
+      .eq('user_id', authUser.id)
+      .order('created_at', { ascending: false })
+
+    if (error) {
+      console.error('Error fetching tasks:', error)
+      return
+    }
+
+    const groupedTasks: TaskStore = { work: [], personal: [], leisure: [] }
+
+    data?.forEach((row) => {
+      if (!['work', 'personal', 'leisure'].includes(row.section)) return
+
+      const section = row.section as 'work' | 'personal' | 'leisure'
+
+  const task: Task = {
+    id: row.id,
+    title: row.title,
+    section,
+    brief: row.brief ?? undefined,
+    deadline: row.deadline
+      ? new Date(row.deadline).toLocaleDateString()
+      : 'No deadline set',
+    priority: 'medium',
+    priorityScore: row.priority_score ?? undefined,
+    priorityWhy: row.explanation ?? undefined,
+    estimatedTime:
+      row.estimated_time_minutes != null
+        ? `${row.estimated_time_minutes} min`
+        : undefined,
+    blocked: row.is_blocked ?? false,
+    dueToday: row.deadline
+      ? new Date(row.deadline).toDateString() === new Date().toDateString()
+      : false,
+    atRisk: row.is_blocked === true,
+  }
+
+  groupedTasks[section].push(task)
+})
+
+    setTasks(groupedTasks)
+  }
+
+  // Load tasks once on app start
+  useEffect(() => {
+    fetchTasks()
+  }, [])
 
   const completeTask = (id: string) => {
     const allTasks = [...tasks.work, ...tasks.personal, ...tasks.leisure]
@@ -58,10 +121,38 @@ export function AppProvider({ children }: AppProviderProps) {
     }))
   }
 
-  const addTask = (task: Task) => {
+  const addTask = async (task: Task) => {
+    const { data: { user: authUser } } = await supabase.auth.getUser()
+    if (!authUser) throw new Error('User is not authenticated')
+
+    const { data, error } = await supabase
+      .from('tasks')
+      .insert({
+        user_id: authUser.id,
+        title: task.title,
+        section: task.section,
+        brief: task.brief ?? null,
+        deadline: null,
+        estimated_time_minutes: null,
+        priority_score: null,
+        explanation: null,
+        status: 'pending',
+        is_blocked: false,
+        source_type: 'text',
+      })
+      .select()
+      .single()
+
+    if (error) {
+      console.error('Error creating task:', error)
+      throw error
+    }
+
+    const savedTask: Task = { ...task, id: data.id }
+
     setTasks((prev) => ({
       ...prev,
-      [task.section]: [...prev[task.section], task],
+      [savedTask.section]: [savedTask, ...prev[savedTask.section]],
     }))
   }
 
@@ -76,7 +167,7 @@ export function AppProvider({ children }: AppProviderProps) {
   const [history, setHistory] = useState(initialHistory)
 
   // -----------------------------
-  // User (real, from Supabase — replaces mockUser)
+  // User (real, from Supabase)
   // -----------------------------
   const [user, setUser] = useState({ name: '', email: '', profession: '' })
 
@@ -113,9 +204,6 @@ export function AppProvider({ children }: AppProviderProps) {
   const atRiskCount = allTasks.filter((task) => task.atRisk).length
   const suggestedTask = tasks.work[0] ?? tasks.personal[0] ?? null
 
-  // -----------------------------
-  // Context
-  // -----------------------------
   const value: AppContextType = {
     darkMode,
     toggleDark,
@@ -135,9 +223,6 @@ export function AppProvider({ children }: AppProviderProps) {
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>
 }
 
-// -----------------------------
-// Hook
-// -----------------------------
 export function useApp(): AppContextType {
   const context = useContext(AppContext)
   if (!context) {

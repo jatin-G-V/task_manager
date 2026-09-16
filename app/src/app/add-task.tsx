@@ -78,28 +78,29 @@ export default function AddTaskScreen() {
   const [assignedSection, setAssignedSection] =
     useState<'work' | 'personal' | 'leisure' | null>(null)
 
-  const handleSave = () => {
-    if (!input.trim()) return
+  const handleSave = async () => {
+  if (!input.trim() || !assignedSection) return
 
-    const section = classifySection(input)
-
+  try {
     const task: Task = {
-      id: `new-${Date.now()}`,
+      id: '',
       title: input.trim(),
       deadline: 'No deadline set',
-      section,
+      section: assignedSection,
       priority: 'medium',
     }
 
-    addTask(task)
+    await addTask(task)
 
-    setAssignedSection(section)
     setSaved(true)
 
     setTimeout(() => {
       router.back()
     }, 1200)
+  } catch (error) {
+    console.error('Failed to save task:', error)
   }
+}
 
   const toggleRecording = () => {
     setRecording(value => !value)
@@ -224,7 +225,7 @@ export default function AddTaskScreen() {
               { color: t.muted },
             ]}
           >
-            AI will classify your task automatically
+            Choose a section for now — AI will take over later
           </Text>
         </View>
       </View>
@@ -236,34 +237,100 @@ export default function AddTaskScreen() {
         showsVerticalScrollIndicator={false}
       >
         {/* Text input */}
-        <View>
-          <Text
-            style={[
-              styles.label,
-              { color: t.muted },
-            ]}
-          >
-            What needs to get done?
-          </Text>
+<View>
+  <Text
+    style={[
+      styles.label,
+      { color: t.muted },
+    ]}
+  >
+    What needs to get done?
+  </Text>
 
-          <TextInput
-            value={input}
-            onChangeText={setInput}
-            placeholder="e.g. Review the onboarding flow and send feedback to the team"
-            placeholderTextColor={t.muted}
-            multiline
-            numberOfLines={4}
-            textAlignVertical="top"
-            style={[
-              styles.textInput,
-              {
-                backgroundColor: t.surface,
-                borderColor: t.border,
-                color: t.text,
-              },
-            ]}
-          />
-        </View>
+  <TextInput
+    value={input}
+    onChangeText={setInput}
+    placeholder="e.g. Review the onboarding flow and send feedback to the team"
+    placeholderTextColor={t.muted}
+    multiline
+    numberOfLines={4}
+    textAlignVertical="top"
+    style={[
+      styles.textInput,
+      {
+        backgroundColor: t.surface,
+        borderColor: t.border,
+        color: t.text,
+      },
+    ]}
+  />
+</View>
+
+{/* SECTION */}
+<View style={styles.sectionContainer}>
+  <Text
+    style={[
+      styles.label,
+      { color: t.muted },
+    ]}
+  >
+    Where does this task belong?
+  </Text>
+
+  <View style={styles.sectionRow}>
+    {[
+      {
+        id: 'work',
+        label: '💼 Work',
+      },
+      {
+        id: 'personal',
+        label: '🌿 Personal',
+      },
+      {
+        id: 'leisure',
+        label: '☕ Leisure',
+      },
+    ].map((section) => {
+      const selected = assignedSection === section.id
+
+      return (
+        <Pressable
+          key={section.id}
+          onPress={() =>
+            setAssignedSection(
+              section.id as 'work' | 'personal' | 'leisure'
+            )
+          }
+          style={[
+            styles.sectionButton,
+            {
+              backgroundColor: selected
+                ? t.primary
+                : t.surface,
+              borderColor: selected
+                ? t.primary
+                : t.border,
+            },
+          ]}
+        >
+          <Text
+            style={{
+              color: selected
+                ? '#FFFFFF'
+                : t.text,
+              fontSize: 13,
+              fontWeight: '600',
+            }}
+          >
+            {section.label}
+          </Text>
+        </Pressable>
+      )
+    })}
+  </View>
+</View>
+
 
         {/* Divider */}
         <View style={styles.dividerRow}>
@@ -362,7 +429,7 @@ export default function AddTaskScreen() {
         {/* Save */}
         <Pressable
           onPress={handleSave}
-          disabled={!input.trim()}
+          disabled={!input.trim() || !assignedSection}
           style={[
             styles.saveButton,
             {
@@ -569,4 +636,21 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     fontFamily: 'Outfit',
   },
+  sectionContainer: {
+  marginTop: 20,
+},
+
+sectionRow: {
+  flexDirection: 'row',
+  gap: 8,
+},
+
+sectionButton: {
+  flex: 1,
+  paddingVertical: 12,
+  borderRadius: 12,
+  borderWidth: 1.5,
+  alignItems: 'center',
+  justifyContent: 'center',
+},
 })
