@@ -310,10 +310,26 @@ export function AppProvider({ children }: AppProviderProps) {
       (task) => task.atRisk
     ).length
 
-  const suggestedTask =
-    tasks.work[0] ??
-    tasks.personal[0] ??
-    null
+  const suggestedTask = (() => {
+  const allTasks = [...tasks.work, ...tasks.personal, ...tasks.leisure]
+  const eligible = allTasks.filter((t) => t.deadline && !t.blocked)
+
+  if (eligible.length === 0) return null
+
+  const now = Date.now()
+  const sectionWeight: Record<string, number> = { work: 2, personal: 1, leisure: 1 }
+
+  const scored = eligible.map((t) => {
+    const deadlineMs = new Date(t.deadline).getTime()
+    const estimatedMinutes = t.estimatedTime ? parseInt(t.estimatedTime, 10) || 0 : 0
+    const rawSlack = deadlineMs - now - estimatedMinutes * 60000
+    const weightedSlack = rawSlack / sectionWeight[t.section]
+    return { task: t, weightedSlack }
+  })
+
+  scored.sort((a, b) => a.weightedSlack - b.weightedSlack)
+  return scored[0].task
+})()
 
   // -----------------------------
   // Update task information

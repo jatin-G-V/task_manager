@@ -298,11 +298,12 @@ export default function DashboardScreen() {
           <Pressable
             onPress={() =>
               router.push({
-                pathname: '../components/TaskDetail',
-                params: {
-                  taskId: suggestedTask.id,
-                },
-              })
+              pathname: '/task-details',
+              params: {
+                id: suggestedTask.id,
+                section: suggestedTask.section,
+              },
+            })
             }
             style={({ pressed }) => [
               styles.suggestedCard,
