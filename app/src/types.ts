@@ -98,7 +98,17 @@ export interface AppContextType {
   tasks: TaskStore
   completeTask: (id: string) => void
   addTask: (task: Task) => void
-
+  updateTask: (
+  id: string,
+  section: 'work' | 'personal' | 'leisure',
+  updates: Partial<{
+    title: string
+    brief: string | null
+    deadline: string | null
+    estimated_time_minutes: number | null
+    status: string
+  }>
+) => Promise<void>
   energy: EnergyLevel
   setEnergy: (e: 'low' | 'focused' | 'high') => void
 

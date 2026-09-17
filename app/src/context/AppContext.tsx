@@ -204,6 +204,56 @@ export function AppProvider({ children }: AppProviderProps) {
   const atRiskCount = allTasks.filter((task) => task.atRisk).length
   const suggestedTask = tasks.work[0] ?? tasks.personal[0] ?? null
 
+  // -----------------------------
+  // Update task information
+  // -----------------------------
+  const updateTask = async (
+  id: string,
+  section: 'work' | 'personal' | 'leisure',
+  updates: Partial<{
+    title: string
+    brief: string | null
+    deadline: string | null
+    estimated_time_minutes: number | null
+    status: string
+  }>
+) => {
+  const { error } = await supabase
+    .from('tasks')
+    .update(updates)
+    .eq('id', id)
+
+  if (error) {
+    console.error('Error updating task:', error)
+    throw error
+  }
+
+  setTasks((prev) => ({
+    ...prev,
+    [section]: prev[section].map((t) =>
+      t.id === id
+        ? {
+            ...t,
+            title: updates.title ?? t.title,
+            brief: updates.brief !== undefined ? updates.brief ?? undefined : t.brief,
+            deadline: updates.deadline
+              ? new Date(updates.deadline).toLocaleDateString()
+              : t.deadline,
+            estimatedTime:
+              updates.estimated_time_minutes != null
+                ? `${updates.estimated_time_minutes} min`
+                : t.estimatedTime,
+          }
+        : t
+    ),
+  }))
+}
+  
+
+  // -----------------------------
+  // Change the task in the local state
+  // -----------------------------
+  
   const value: AppContextType = {
     darkMode,
     toggleDark,
@@ -213,6 +263,7 @@ export function AppProvider({ children }: AppProviderProps) {
     addTask,
     energy,
     setEnergy,
+    updateTask,
     user,
     dueTodayCount,
     atRiskCount,

@@ -21,6 +21,7 @@ import {
   Sparkles,
 } from '../components/icons'
 
+
 const priorityColors: Record<string, string> = {
   high: '#E9713C',
   medium: '#F5C842',
@@ -34,7 +35,7 @@ const { id, section } = useLocalSearchParams<{
 }>()
 const router = useRouter()
 
-const { tasks, t, completeTask } = useApp()
+const { tasks, t, completeTask, updateTask } = useApp()
 
 const task = tasks[section].find(item => item.id === id)
 
@@ -43,7 +44,10 @@ const task = tasks[section].find(item => item.id === id)
   )
   const [deadline, setDeadline] = useState(task?.deadline ?? '')
   const [editingDeadline, setEditingDeadline] = useState(false)
-
+  const [title, setTitle] = useState(task?.title ?? '')
+  const [editingTitle, setEditingTitle] = useState(false)
+  const [brief, setBrief] = useState(task?.brief ?? '')
+  const [editingBrief, setEditingBrief] = useState(false)
   const [estimatedTime, setEstimatedTime] = useState(
     task?.estimatedTime ?? ''
   )
@@ -163,14 +167,52 @@ const task = tasks[section].find(item => item.id === id)
             </View>
 
             {/* Task title */}
-            <Text
+            {editingTitle ? (
+            <TextInput
+              autoFocus
+              value={title}
+              onChangeText={setTitle}
+              onBlur={async () => {
+                setEditingTitle(false)
+
+                if (!title.trim()) {
+                  setTitle(task.title)
+                  return
+                }
+
+                try {
+                  await updateTask(task.id, section, {
+                    title: title.trim(),
+                  })
+                } catch (e) {
+                  console.error('Failed to save title:', e)
+                }
+              }}
               style={[
                 styles.title,
-                { color: t.text },
+                {
+                  color: t.text,
+                  borderBottomWidth: 1,
+                  borderColor: t.primary,
+                },
               ]}
+            />
+          ) : (
+            <Pressable
+              onPress={() => setEditingTitle(true)}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 8,
+              }}
             >
-              {task.title}
-            </Text>
+              <Text style={[styles.title, { color: t.text }]}>
+                {title}
+              </Text>
+
+              <Pencil size={14} color={t.muted} />
+            </Pressable>
+          )}
 
           </View>
 
@@ -185,26 +227,66 @@ const task = tasks[section].find(item => item.id === id)
       >
 
         {/* Brief */}
-        {section === 'work' && task.brief && (
-          <View
-            style={[
-              styles.brief,
-              {
-                backgroundColor: t.surface,
-                borderColor: t.border,
-              },
-            ]}
-          >
-            <Text
-              style={[
-                styles.briefText,
-                { color: t.muted },
-              ]}
-            >
-              {task.brief}
-            </Text>
-          </View>
-        )}
+        {section === 'work' && (
+  <View
+    style={[
+      styles.brief,
+      {
+        backgroundColor: t.surface,
+        borderColor: t.border,
+      },
+    ]}
+  >
+    {editingBrief ? (
+      <TextInput
+        autoFocus
+        value={brief}
+        onChangeText={setBrief}
+        multiline
+        onBlur={async () => {
+          setEditingBrief(false)
+
+          try {
+            await updateTask(task.id, section, {
+              brief: brief.trim() || null,
+            })
+          } catch (e) {
+            console.error('Failed to save brief:', e)
+          }
+        }}
+        style={[
+          styles.briefText,
+          {
+            color: t.text,
+          },
+        ]}
+      />
+    ) : (
+      <Pressable
+        onPress={() => setEditingBrief(true)}
+        style={{
+          flexDirection: 'row',
+          alignItems: 'flex-start',
+          gap: 8,
+        }}
+      >
+        <Text
+          style={[
+            styles.briefText,
+            {
+              color: t.muted,
+              flex: 1,
+            },
+          ]}
+        >
+          {brief || 'Add a brief...'}
+        </Text>
+
+        <Pencil size={12} color={t.muted} />
+      </Pressable>
+    )}
+  </View>
+)}
 
         {/* Deadline + Time */}
         <View style={styles.infoRow}>
@@ -233,23 +315,40 @@ const task = tasks[section].find(item => item.id === id)
             </View>
 
             {editingDeadline ? (
-              <TextInput
-                autoFocus
-                value={deadline}
-                onChangeText={setDeadline}
-                onBlur={() =>
-                  setEditingDeadline(false)
-                }
-                style={[
-                  styles.editInput,
-                  {
-                    backgroundColor: t.surface2,
-                    color: t.text,
-                    borderColor: t.primary,
-                  },
-                ]}
-              />
-            ) : (
+  <TextInput
+    autoFocus
+    value={deadline}
+    onChangeText={setDeadline}
+    placeholder="e.g. 2026-09-20"
+    placeholderTextColor={t.muted}
+    onBlur={async () => {
+      setEditingDeadline(false)
+
+      const parsed = new Date(deadline)
+
+      if (isNaN(parsed.getTime())) {
+        console.warn('Invalid date entered, not saving')
+        return
+      }
+
+      try {
+        await updateTask(task.id, section, {
+          deadline: parsed.toISOString(),
+        })
+      } catch (e) {
+        console.error('Failed to save deadline:', e)
+      }
+    }}
+    style={[
+      styles.editInput,
+      {
+        backgroundColor: t.surface2,
+        color: t.text,
+        borderColor: t.primary,
+      },
+    ]}
+  />
+) : (
               <Pressable
                 onPress={() =>
                   setEditingDeadline(true)
@@ -298,50 +397,66 @@ const task = tasks[section].find(item => item.id === id)
               </View>
 
               {editingTime ? (
-                <TextInput
-                  autoFocus
-                  value={estimatedTime}
-                  onChangeText={setEstimatedTime}
-                  onBlur={() =>
-                    setEditingTime(false)
-                  }
-                  placeholder="e.g. 2 hours"
-                  placeholderTextColor={t.muted}
-                  style={[
-                    styles.editInput,
-                    {
-                      backgroundColor: t.surface2,
-                      color: t.text,
-                      borderColor: t.primary,
-                    },
-                  ]}
-                />
-              ) : (
-                <Pressable
-                  onPress={() =>
-                    setEditingTime(true)
-                  }
-                  style={styles.editValue}
-                >
-                  <Text
-                    style={[
-                      styles.valueText,
-                      {
-                        color: estimatedTime
-                          ? t.text
-                          : t.muted,
-                      },
-                    ]}
-                  >
-                    {estimatedTime || 'Set time'}
-                  </Text>
+  <TextInput
+    autoFocus
+    value={estimatedTime}
+    onChangeText={setEstimatedTime}
+    onBlur={async () => {
+      setEditingTime(false)
 
-                  <Pencil
-                    size={12}
-                    color={t.muted}
-                  />
-                </Pressable>
-              )}
+      const minutes = parseInt(
+        estimatedTime.replace(/\D/g, ''),
+        10
+      )
+
+      if (isNaN(minutes)) {
+        console.warn('Invalid time entered, not saving')
+        return
+      }
+
+      try {
+        await updateTask(task.id, section, {
+          estimated_time_minutes: minutes,
+        })
+      } catch (e) {
+        console.error('Failed to save estimated time:', e)
+      }
+    }}
+    placeholder="e.g. 120 (minutes)"
+    placeholderTextColor={t.muted}
+    style={[
+      styles.editInput,
+      {
+        backgroundColor: t.surface2,
+        color: t.text,
+        borderColor: t.primary,
+      },
+    ]}
+  />
+) : (
+  <Pressable
+    onPress={() => setEditingTime(true)}
+    style={styles.editValue}
+  >
+    <Text
+      style={[
+        styles.valueText,
+        {
+          color: estimatedTime
+            ? t.text
+            : t.muted,
+        },
+      ]}
+    >
+      {estimatedTime || 'Set time'}
+    </Text>
+
+    <Pencil
+      size={12}
+      color={t.muted}
+    />
+  </Pressable>
+)}
             </View>
           )}
 
