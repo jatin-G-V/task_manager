@@ -10,7 +10,7 @@ import {
   Platform,
 } from 'react-native'
 import { useRouter } from 'expo-router'
-
+import { SafeAreaView } from 'react-native-safe-area-context'
 import { useApp } from '../context/AppContext'
 import BottomTabBar from '../components/BottomTabBar'
 import FAB from '../components/FAB'
@@ -126,7 +126,7 @@ export default function DashboardScreen() {
       {/* TOP CONTENT */}
       {/* ================================ */}
 
-      <View style={styles.mainContent}>
+      <SafeAreaView style={styles.mainContent}>
 
         {/* HEADER */}
 
@@ -700,7 +700,7 @@ export default function DashboardScreen() {
 
         </View>
 
-      </View>
+      </SafeAreaView>
 
 
       {/* ================================ */}

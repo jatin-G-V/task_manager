@@ -1,5 +1,9 @@
 import React, { useState } from 'react'
 import type { Task } from '../types'
+import DateTimePicker from '@react-native-community/datetimepicker'
+import { Alert, Platform } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
+
 import {
   View,
   Text,
@@ -8,9 +12,11 @@ import {
   TextInput,
   StyleSheet,
 } from 'react-native'
+
 import { useLocalSearchParams, useRouter } from 'expo-router'
 
 import { useApp } from '../context/AppContext'
+
 import {
   ChevronLeft,
   Check,
@@ -21,7 +27,6 @@ import {
   Sparkles,
 } from '../components/icons'
 
-
 const priorityColors: Record<string, string> = {
   high: '#E9713C',
   medium: '#F5C842',
@@ -29,57 +34,293 @@ const priorityColors: Record<string, string> = {
 }
 
 export default function TaskDetailScreen() {
-const { id, section } = useLocalSearchParams<{
-  id: string
-  section: 'work' | 'personal' | 'leisure'
-}>()
-const router = useRouter()
+  const { id, section } = useLocalSearchParams<{
+    id: string
+    section: 'work' | 'personal' | 'leisure'
+  }>()
 
-const { tasks, t, completeTask, updateTask } = useApp()
+  const router = useRouter()
 
-const task = tasks[section].find(item => item.id === id)
+  const {
+    tasks,
+    t,
+    completeTask,
+    updateTask,
+  } = useApp()
+
+  const task = tasks[section].find(
+    item => item.id === id
+  )
 
   const [steps, setSteps] = useState(
-    task?.steps?.map(s => ({ text: s, done: false })) ?? []
+    task?.steps?.map(s => ({
+      text: s,
+      done: false,
+    })) ?? []
   )
-  const [deadline, setDeadline] = useState(task?.deadline ?? '')
-  const [editingDeadline, setEditingDeadline] = useState(false)
-  const [title, setTitle] = useState(task?.title ?? '')
-  const [editingTitle, setEditingTitle] = useState(false)
-  const [brief, setBrief] = useState(task?.brief ?? '')
-  const [editingBrief, setEditingBrief] = useState(false)
-  const [estimatedTime, setEstimatedTime] = useState(
-    task?.estimatedTime ?? ''
+
+  /*
+   * --------------------------------------------------
+   * DEADLINE STATE
+   * --------------------------------------------------
+   */
+
+  const initialDeadline =
+    task?.deadline &&
+    task.deadline !== 'No deadline set'
+      ? new Date(task.deadline)
+      : null
+
+  const [deadlineDate, setDeadlineDate] =
+    useState<Date | null>(
+      initialDeadline &&
+      !isNaN(initialDeadline.getTime())
+        ? initialDeadline
+        : null
+    )
+
+  const [hasTime, setHasTime] = useState(
+    !!(
+      initialDeadline &&
+      !isNaN(initialDeadline.getTime()) &&
+      (
+        initialDeadline.getHours() !== 0 ||
+        initialDeadline.getMinutes() !== 0
+      )
+    )
   )
-  const [editingTime, setEditingTime] = useState(false)
 
-  const [urgent, setUrgent] = useState(false)
+  const [showDatePicker, setShowDatePicker] =
+    useState(false)
 
-  if (!task) {
-    return (
-      <View style={[styles.empty, { backgroundColor: t.bg }]}>
-        <Text style={[styles.emptyText, { color: t.muted }]}>
-          Task not found
-        </Text>
-      </View>
+  const [showTimePicker, setShowTimePicker] =
+    useState(false)
+
+  const showAlert = (
+  title: string,
+  message: string
+) => {
+  if (Platform.OS === 'web') {
+    window.alert(`${title}: ${message}`)
+  } else {
+    Alert.alert(title, message)
+  }
+}  
+
+  const saveDeadline = async (date: Date) => {
+    if (!task) return
+
+    try {
+      await updateTask(
+        task.id,
+        section,
+        {
+          deadline: date.toISOString(),
+        }
+      )
+    } catch (e) {
+      console.error(
+        'Failed to save deadline:',
+        e
+      )
+    }
+  }
+
+ const onDateChange = (
+  event: any,
+  selected?: Date
+) => {
+  setShowDatePicker(false)
+
+  if (
+    event.type === 'dismissed' ||
+    !selected
+  ) {
+    return
+  }
+
+  const merged = new Date(selected)
+
+  /*
+   * If a time was already selected,
+   * preserve that time when changing the date.
+   */
+  if (deadlineDate && hasTime) {
+    merged.setHours(
+      deadlineDate.getHours(),
+      deadlineDate.getMinutes(),
+      0,
+      0
+    )
+  } else {
+    /*
+     * No time selected yet.
+     * Treat the selected date as valid
+     * until the end of that day.
+     */
+    merged.setHours(
+      23,
+      59,
+      0,
+      0
     )
   }
 
-  const toggleStep = (index: number) => {
+  const now = new Date()
+
+  if (merged < now) {
+    showAlert(
+      'Invalid deadline',
+      "You can't set a deadline in the past."
+    )
+    return
+  }
+
+  setDeadlineDate(merged)
+  saveDeadline(merged)
+}
+
+const onTimeChange = (
+  event: any,
+  selected?: Date
+) => {
+  setShowTimePicker(false)
+
+  if (
+    event.type === 'dismissed' ||
+    !selected ||
+    !deadlineDate
+  ) {
+    return
+  }
+
+  const merged = new Date(
+    deadlineDate
+  )
+
+  merged.setHours(
+    selected.getHours(),
+    selected.getMinutes(),
+    0,
+    0
+  )
+
+  const now = new Date()
+
+  if (merged < now) {
+    showAlert(
+      'Invalid deadline',
+      "You can't set a deadline time in the past."
+    )
+    return
+  }
+
+  setDeadlineDate(merged)
+  setHasTime(true)
+
+  saveDeadline(merged)
+}
+
+  /*
+   * --------------------------------------------------
+   * OTHER STATE
+   * --------------------------------------------------
+   */
+
+  const [title, setTitle] = useState(
+    task?.title ?? ''
+  )
+
+  const [editingTitle, setEditingTitle] =
+    useState(false)
+
+  const [brief, setBrief] = useState(
+    task?.brief ?? ''
+  )
+
+  const [editingBrief, setEditingBrief] =
+    useState(false)
+
+  const [estimatedTime, setEstimatedTime] = useState(() => {
+  if (task?.estimatedTime == null) return ''
+
+  return String(task.estimatedTime).replace(/[^0-9]/g, '')
+})
+
+  const [editingTime, setEditingTime] =
+    useState(false)
+
+  const [urgent, setUrgent] =
+    useState(false)
+
+  /*
+   * --------------------------------------------------
+   * TASK NOT FOUND
+   * --------------------------------------------------
+   */
+
+  if (!task) {
+    return (
+      <SafeAreaView
+        style={[
+          styles.empty,
+          {
+            backgroundColor: t.bg,
+          },
+        ]}
+        edges={['top']}
+      >
+        <Text
+          style={[
+            styles.emptyText,
+            {
+              color: t.muted,
+            },
+          ]}
+        >
+          Task not found
+        </Text>
+      </SafeAreaView>
+    )
+  }
+
+  /*
+   * --------------------------------------------------
+   * WORKFLOW
+   * --------------------------------------------------
+   */
+
+  const toggleStep = (
+    index: number
+  ) => {
     setSteps(prev =>
       prev.map((step, i) =>
         i === index
-          ? { ...step, done: !step.done }
+          ? {
+              ...step,
+              done: !step.done,
+            }
           : step
       )
     )
   }
+
+  /*
+   * --------------------------------------------------
+   * COMPLETE TASK
+   * --------------------------------------------------
+   */
 
   const handleComplete = () => {
     completeTask(task.id)
     router.back()
   }
 
+  /*
+   * --------------------------------------------------
+   * SECTION NAME
+   * --------------------------------------------------
+   */
 
   const sectionName =
     section === 'work'
@@ -89,21 +330,33 @@ const task = tasks[section].find(item => item.id === id)
         : 'Leisure'
 
   return (
-    <View style={[styles.container, { backgroundColor: t.bg }]}>
-
+    <SafeAreaView
+      style={[
+        styles.container,
+        {
+          backgroundColor: t.bg,
+        },
+      ]}
+      edges={['top']}
+    >
       {/* Header */}
-      <View style={styles.header}>
 
+      <View style={styles.header}>
         <Pressable
           onPress={() => router.back()}
           style={styles.backButton}
         >
-          <ChevronLeft size={18} color={t.muted} />
+          <ChevronLeft
+            size={18}
+            color={t.muted}
+          />
 
           <Text
             style={[
               styles.backText,
-              { color: t.muted },
+              {
+                color: t.muted,
+              },
             ]}
           >
             {sectionName}
@@ -111,12 +364,14 @@ const task = tasks[section].find(item => item.id === id)
         </Pressable>
 
         <View style={styles.titleRow}>
-
-          <View style={styles.titleContainer}>
-
+          <View
+            style={styles.titleContainer}
+          >
             {/* Priority + Risk */}
-            <View style={styles.badgesRow}>
 
+            <View
+              style={styles.badgesRow}
+            >
               <View
                 style={[
                   styles.priorityBadge,
@@ -131,7 +386,9 @@ const task = tasks[section].find(item => item.id === id)
                     styles.priorityText,
                     {
                       color:
-                        priorityColors[task.priority],
+                        priorityColors[
+                          task.priority
+                        ],
                     },
                   ]}
                 >
@@ -144,7 +401,8 @@ const task = tasks[section].find(item => item.id === id)
                   style={[
                     styles.riskBadge,
                     {
-                      backgroundColor: t.riskBg,
+                      backgroundColor:
+                        t.riskBg,
                     },
                   ]}
                 >
@@ -156,212 +414,181 @@ const task = tasks[section].find(item => item.id === id)
                   <Text
                     style={[
                       styles.riskText,
-                      { color: t.risk },
+                      {
+                        color: t.risk,
+                      },
                     ]}
                   >
                     At Risk
                   </Text>
                 </View>
               )}
-
             </View>
 
             {/* Task title */}
+
             {editingTitle ? (
-            <TextInput
-              autoFocus
-              value={title}
-              onChangeText={setTitle}
-              onBlur={async () => {
-                setEditingTitle(false)
+              <TextInput
+                autoFocus
+                value={title}
+                onChangeText={setTitle}
+                onBlur={async () => {
+                  setEditingTitle(false)
 
-                if (!title.trim()) {
-                  setTitle(task.title)
-                  return
+                  if (!title.trim()) {
+                    setTitle(task.title)
+                    return
+                  }
+
+                  try {
+                    await updateTask(
+                      task.id,
+                      section,
+                      {
+                        title:
+                          title.trim(),
+                      }
+                    )
+                  } catch (e) {
+                    console.error(
+                      'Failed to save title:',
+                      e
+                    )
+                  }
+                }}
+                style={[
+                  styles.title,
+                  {
+                    color: t.text,
+                    borderBottomWidth: 1,
+                    borderColor:
+                      t.primary,
+                  },
+                ]}
+              />
+            ) : (
+              <Pressable
+                onPress={() =>
+                  setEditingTitle(true)
                 }
+                style={{
+                  flexDirection:
+                    'row',
+                  alignItems:
+                    'center',
+                  gap: 8,
+                }}
+              >
+                <Text
+                  style={[
+                    styles.title,
+                    {
+                      color: t.text,
+                    },
+                  ]}
+                >
+                  {title}
+                </Text>
 
-                try {
-                  await updateTask(task.id, section, {
-                    title: title.trim(),
-                  })
-                } catch (e) {
-                  console.error('Failed to save title:', e)
-                }
-              }}
-              style={[
-                styles.title,
-                {
-                  color: t.text,
-                  borderBottomWidth: 1,
-                  borderColor: t.primary,
-                },
-              ]}
-            />
-          ) : (
-            <Pressable
-              onPress={() => setEditingTitle(true)}
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 8,
-              }}
-            >
-              <Text style={[styles.title, { color: t.text }]}>
-                {title}
-              </Text>
-
-              <Pencil size={14} color={t.muted} />
-            </Pressable>
-          )}
-
+                <Pencil
+                  size={14}
+                  color={t.muted}
+                />
+              </Pressable>
+            )}
           </View>
-
         </View>
       </View>
 
       {/* Body */}
+
       <ScrollView
         style={styles.body}
-        contentContainerStyle={styles.bodyContent}
-        showsVerticalScrollIndicator={false}
+        contentContainerStyle={
+          styles.bodyContent
+        }
+        showsVerticalScrollIndicator={
+          false
+        }
       >
-
         {/* Brief */}
+
         {section === 'work' && (
-  <View
-    style={[
-      styles.brief,
-      {
-        backgroundColor: t.surface,
-        borderColor: t.border,
-      },
-    ]}
-  >
-    {editingBrief ? (
-      <TextInput
-        autoFocus
-        value={brief}
-        onChangeText={setBrief}
-        multiline
-        onBlur={async () => {
-          setEditingBrief(false)
-
-          try {
-            await updateTask(task.id, section, {
-              brief: brief.trim() || null,
-            })
-          } catch (e) {
-            console.error('Failed to save brief:', e)
-          }
-        }}
-        style={[
-          styles.briefText,
-          {
-            color: t.text,
-          },
-        ]}
-      />
-    ) : (
-      <Pressable
-        onPress={() => setEditingBrief(true)}
-        style={{
-          flexDirection: 'row',
-          alignItems: 'flex-start',
-          gap: 8,
-        }}
-      >
-        <Text
-          style={[
-            styles.briefText,
-            {
-              color: t.muted,
-              flex: 1,
-            },
-          ]}
-        >
-          {brief || 'Add a brief...'}
-        </Text>
-
-        <Pencil size={12} color={t.muted} />
-      </Pressable>
-    )}
-  </View>
-)}
-
-        {/* Deadline + Time */}
-        <View style={styles.infoRow}>
-
-          {/* Deadline */}
           <View
             style={[
-              styles.infoCard,
+              styles.brief,
               {
-                backgroundColor: t.surface,
-                borderColor: t.border,
+                backgroundColor:
+                  t.surface,
+                borderColor:
+                  t.border,
               },
             ]}
           >
-            <View style={styles.infoHeader}>
-              <Calendar size={13} color={t.muted} />
+            {editingBrief ? (
+              <TextInput
+                autoFocus
+                value={brief}
+                onChangeText={
+                  setBrief
+                }
+                multiline
+                onBlur={async () => {
+                  setEditingBrief(
+                    false
+                  )
 
-              <Text
+                  try {
+                    await updateTask(
+                      task.id,
+                      section,
+                      {
+                        brief:
+                          brief.trim() ||
+                          null,
+                      }
+                    )
+                  } catch (e) {
+                    console.error(
+                      'Failed to save brief:',
+                      e
+                    )
+                  }
+                }}
                 style={[
-                  styles.infoLabel,
-                  { color: t.muted },
+                  styles.briefText,
+                  {
+                    color: t.text,
+                  },
                 ]}
-              >
-                Deadline
-              </Text>
-            </View>
-
-            {editingDeadline ? (
-  <TextInput
-    autoFocus
-    value={deadline}
-    onChangeText={setDeadline}
-    placeholder="e.g. 2026-09-20"
-    placeholderTextColor={t.muted}
-    onBlur={async () => {
-      setEditingDeadline(false)
-
-      const parsed = new Date(deadline)
-
-      if (isNaN(parsed.getTime())) {
-        console.warn('Invalid date entered, not saving')
-        return
-      }
-
-      try {
-        await updateTask(task.id, section, {
-          deadline: parsed.toISOString(),
-        })
-      } catch (e) {
-        console.error('Failed to save deadline:', e)
-      }
-    }}
-    style={[
-      styles.editInput,
-      {
-        backgroundColor: t.surface2,
-        color: t.text,
-        borderColor: t.primary,
-      },
-    ]}
-  />
-) : (
+              />
+            ) : (
               <Pressable
                 onPress={() =>
-                  setEditingDeadline(true)
+                  setEditingBrief(
+                    true
+                  )
                 }
-                style={styles.editValue}
+                style={{
+                  flexDirection:
+                    'row',
+                  alignItems:
+                    'flex-start',
+                  gap: 8,
+                }}
               >
                 <Text
                   style={[
-                    styles.valueText,
-                    { color: t.text },
+                    styles.briefText,
+                    {
+                      color:
+                        t.muted,
+                      flex: 1,
+                    },
                   ]}
                 >
-                  {deadline}
+                  {brief ||
+                    'Add a brief...'}
                 </Text>
 
                 <Pencil
@@ -371,160 +598,321 @@ const task = tasks[section].find(item => item.id === id)
               </Pressable>
             )}
           </View>
+        )}
 
-          {/* Estimated Time - Work */}
-          {section === 'work' && (
-            <View
+        {/* Deadline */}
+
+        <View
+          style={[
+            styles.infoCard,
+            {
+              backgroundColor:
+                t.surface,
+              borderColor:
+                t.border,
+            },
+          ]}
+        >
+          <View
+            style={
+              styles.infoHeader
+            }
+          >
+            <Calendar
+              size={13}
+              color={t.muted}
+            />
+
+            <Text
               style={[
-                styles.infoCard,
+                styles.infoLabel,
                 {
-                  backgroundColor: t.surface,
-                  borderColor: t.border,
+                  color: t.muted,
                 },
               ]}
             >
-              <View style={styles.infoHeader}>
-                <Clock size={13} color={t.muted} />
+              Deadline
+            </Text>
+          </View>
 
-                <Text
-                  style={[
-                    styles.infoLabel,
-                    { color: t.muted },
-                  ]}
-                >
-                  Est. Time
-                </Text>
-              </View>
+          <Pressable
+            onPress={() =>
+              setShowDatePicker(true)
+            }
+            style={
+              styles.editValue
+            }
+          >
+            <Text
+              style={[
+                styles.valueText,
+                {
+                  color:
+                    deadlineDate
+                      ? t.text
+                      : t.muted,
+                },
+              ]}
+            >
+              {deadlineDate
+                ? deadlineDate.toLocaleDateString()
+                : 'Set date'}
+            </Text>
 
-              {editingTime ? (
-  <TextInput
-    autoFocus
-    value={estimatedTime}
-    onChangeText={setEstimatedTime}
-    onBlur={async () => {
-      setEditingTime(false)
+            <Pencil
+              size={12}
+              color={t.muted}
+            />
+          </Pressable>
 
-      const minutes = parseInt(
-        estimatedTime.replace(/\D/g, ''),
-        10
-      )
+          {deadlineDate && (
+            <Pressable
+              onPress={() =>
+                setShowTimePicker(
+                  true
+                )
+              }
+            >
+              <Text
+                style={{
+                  fontSize: 11,
+                  color: t.primary,
+                  marginTop: 4,
+                }}
+              >
+                {hasTime
+                  ? `Time: ${deadlineDate.toLocaleTimeString(
+                      [],
+                      {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      }
+                    )} · Change`
+                  : '+ Add time (optional)'}
+              </Text>
+            </Pressable>
+          )}
+        </View>
 
-      if (isNaN(minutes)) {
-        console.warn('Invalid time entered, not saving')
-        return
-      }
+        {/* Date Picker */}
 
-      try {
-        await updateTask(task.id, section, {
-          estimated_time_minutes: minutes,
-        })
-      } catch (e) {
-        console.error('Failed to save estimated time:', e)
-      }
-    }}
-    placeholder="e.g. 120 (minutes)"
-    placeholderTextColor={t.muted}
-    style={[
-      styles.editInput,
-      {
-        backgroundColor: t.surface2,
-        color: t.text,
-        borderColor: t.primary,
-      },
-    ]}
-  />
-) : (
-  <Pressable
-    onPress={() => setEditingTime(true)}
-    style={styles.editValue}
-  >
-    <Text
-      style={[
-        styles.valueText,
-        {
-          color: estimatedTime
-            ? t.text
-            : t.muted,
-        },
-      ]}
-    >
-      {estimatedTime || 'Set time'}
-    </Text>
+        {showDatePicker && (
+          <DateTimePicker
+            value={
+              deadlineDate ??
+              new Date()
+            }
+            mode="date"
+            display={
+              Platform.OS === 'ios'
+                ? 'inline'
+                : 'default'
+            }
+            themeVariant="light"
+            onChange={
+              onDateChange
+            }
+          />
+        )}
 
-    <Pencil
-      size={12}
-      color={t.muted}
-    />
-  </Pressable>
-)}
-            </View>
+        {/* Time Picker */}
+
+        {showTimePicker &&
+          deadlineDate && (
+            <DateTimePicker
+              value={
+                deadlineDate
+              }
+              mode="time"
+              display={
+                Platform.OS === 'ios'
+                  ? 'spinner'
+                  : 'default'
+              }
+              themeVariant="light"
+              onChange={
+                onTimeChange
+              }
+            />
           )}
 
-          {/* Scheduled Time - Leisure */}
-          {section === 'leisure' &&
-            task.scheduledTime && (
-              <View
+        {/* Estimated Time */}
+
+        <View
+          style={[
+            styles.infoCard,
+            {
+              backgroundColor:
+                t.surface,
+              borderColor:
+                t.border,
+              marginTop: 12,
+            },
+          ]}
+        >
+          <View
+            style={
+              styles.infoHeader
+            }
+          >
+            <Clock
+              size={13}
+              color={t.muted}
+            />
+
+            <Text
+              style={[
+                styles.infoLabel,
+                {
+                  color: t.muted,
+                },
+              ]}
+            >
+              Estimated Time
+            </Text>
+          </View>
+
+          {editingTime ? (
+            <TextInput
+              autoFocus
+              value={
+                estimatedTime
+              }
+              onChangeText={val =>
+                setEstimatedTime(
+                  val.replace(
+                    /[^0-9]/g,
+                    ''
+                  )
+                )
+              }
+              keyboardType="numeric"
+              onBlur={async () => {
+                setEditingTime(
+                  false
+                )
+
+                const minutes =
+                  parseInt(
+                    estimatedTime,
+                    10
+                  )
+
+                if (
+                  isNaN(minutes) ||
+                  minutes <= 0
+                ) {
+                  console.warn(
+                    'Invalid time entered, not saving'
+                  )
+                  return
+                }
+
+                try {
+                  await updateTask(
+                    task.id,
+                    section,
+                    {
+                      estimated_time_minutes:
+                        minutes,
+                    }
+                  )
+                } catch (e) {
+                  console.error(
+                    'Failed to save estimated time:',
+                    e
+                  )
+                }
+              }}
+              placeholder="e.g. 120"
+              placeholderTextColor={
+                t.muted
+              }
+              style={[
+                styles.editInput,
+                {
+                  backgroundColor:
+                    t.surface2,
+                  color: t.text,
+                  borderColor:
+                    t.primary,
+                },
+              ]}
+            />
+          ) : (
+            <Pressable
+              onPress={() =>
+                setEditingTime(
+                  true
+                )
+              }
+              style={
+                styles.editValue
+              }
+            >
+              <Text
                 style={[
-                  styles.infoCard,
+                  styles.valueText,
                   {
-                    backgroundColor: t.surface,
-                    borderColor: t.border,
+                    color:
+                      estimatedTime
+                        ? t.text
+                        : t.muted,
                   },
                 ]}
               >
-                <View style={styles.infoHeader}>
-                  <Clock
-                    size={13}
-                    color={t.muted}
-                  />
+                {estimatedTime
+                  ? `${estimatedTime} min`
+                  : 'Set estimated time'}
+              </Text>
 
-                  <Text
-                    style={[
-                      styles.infoLabel,
-                      { color: t.muted },
-                    ]}
-                  >
-                    Scheduled
-                  </Text>
-                </View>
-
-                <Text
-                  style={[
-                    styles.valueText,
-                    { color: t.text },
-                  ]}
-                >
-                  {task.scheduledTime}
-                </Text>
-              </View>
-            )}
-
+              <Pencil
+                size={12}
+                color={t.muted}
+              />
+            </Pressable>
+          )}
         </View>
 
         {/* AI Priority Score */}
+
         {section === 'work' &&
           task.priorityScore && (
             <View
               style={[
                 styles.priorityCard,
                 {
-                  backgroundColor: `${t.primary}15`,
-                  borderColor: `${t.primary}25`,
+                  backgroundColor:
+                    `${t.primary}15`,
+                  borderColor:
+                    `${t.primary}25`,
                 },
               ]}
             >
-              <View style={styles.priorityHeader}>
-
-                <View style={styles.priorityHeading}>
+              <View
+                style={
+                  styles.priorityHeader
+                }
+              >
+                <View
+                  style={
+                    styles.priorityHeading
+                  }
+                >
                   <Sparkles
                     size={14}
-                    color={t.primary}
+                    color={
+                      t.primary
+                    }
                   />
 
                   <Text
                     style={[
                       styles.priorityLabel,
-                      { color: t.primary },
+                      {
+                        color:
+                          t.primary,
+                      },
                     ]}
                   >
                     AI Priority Score
@@ -535,143 +923,183 @@ const task = tasks[section].find(item => item.id === id)
                   style={[
                     styles.scoreBadge,
                     {
-                      backgroundColor: t.primary,
+                      backgroundColor:
+                        t.primary,
                     },
                   ]}
                 >
-                  <Text style={styles.score}>
-                    {task.priorityScore}
+                  <Text
+                    style={
+                      styles.score
+                    }
+                  >
+                    {
+                      task.priorityScore
+                    }
                   </Text>
 
-                  <Text style={styles.scoreTotal}>
+                  <Text
+                    style={
+                      styles.scoreTotal
+                    }
+                  >
                     /100
                   </Text>
                 </View>
-
               </View>
 
               {task.priorityWhy && (
                 <Text
                   style={[
                     styles.priorityWhy,
-                    { color: t.muted },
+                    {
+                      color:
+                        t.muted,
+                    },
                   ]}
                 >
-                  {task.priorityWhy}
+                  {
+                    task.priorityWhy
+                  }
                 </Text>
               )}
-
             </View>
           )}
 
         {/* Workflow */}
+
         {section === 'work' &&
           steps.length > 0 && (
-            <View style={styles.workflow}>
-
+            <View
+              style={
+                styles.workflow
+              }
+            >
               <Text
                 style={[
                   styles.workflowLabel,
-                  { color: t.muted },
+                  {
+                    color:
+                      t.muted,
+                  },
                 ]}
               >
                 Workflow
               </Text>
 
-              {steps.map((step, index) => (
-                <Pressable
-                  key={index}
-                  onPress={() =>
-                    toggleStep(index)
-                  }
-                  style={[
-                    styles.step,
-                    {
-                      backgroundColor: t.surface,
-                      borderColor: step.done
-                        ? `${t.success}40`
-                        : t.border,
-                    },
-                  ]}
-                >
-                  <View
+              {steps.map(
+                (
+                  step,
+                  index
+                ) => (
+                  <Pressable
+                    key={index}
+                    onPress={() =>
+                      toggleStep(
+                        index
+                      )
+                    }
                     style={[
-                      styles.checkbox,
+                      styles.step,
                       {
-                        backgroundColor: step.done
-                          ? t.success
-                          : t.surface2,
-                        borderColor: step.done
-                          ? 'transparent'
-                          : t.border,
-                      },
-                    ]}
-                  >
-                    {step.done && (
-                      <Check
-                        size={11}
-                        color="#FFFFFF"
-                      />
-                    )}
-                  </View>
-
-                  <Text
-                    style={[
-                      styles.stepText,
-                      {
-                        color: step.done
-                          ? t.muted
-                          : t.text,
-                        textDecorationLine:
+                        backgroundColor:
+                          t.surface,
+                        borderColor:
                           step.done
-                            ? 'line-through'
-                            : 'none',
+                            ? `${t.success}40`
+                            : t.border,
                       },
                     ]}
                   >
-                    {step.text}
-                  </Text>
-                </Pressable>
-              ))}
+                    <View
+                      style={[
+                        styles.checkbox,
+                        {
+                          backgroundColor:
+                            step.done
+                              ? t.success
+                              : t.surface2,
+                          borderColor:
+                            step.done
+                              ? 'transparent'
+                              : t.border,
+                        },
+                      ]}
+                    >
+                      {step.done && (
+                        <Check
+                          size={11}
+                          color="#FFFFFF"
+                        />
+                      )}
+                    </View>
 
+                    <Text
+                      style={[
+                        styles.stepText,
+                        {
+                          color:
+                            step.done
+                              ? t.muted
+                              : t.text,
+                          textDecorationLine:
+                            step.done
+                              ? 'line-through'
+                              : 'none',
+                        },
+                      ]}
+                    >
+                      {step.text}
+                    </Text>
+                  </Pressable>
+                )
+              )}
             </View>
           )}
-
       </ScrollView>
 
       {/* Bottom Actions */}
+
       <View
         style={[
           styles.actions,
           {
-            borderTopColor: t.border,
-            backgroundColor: t.surface,
+            borderTopColor:
+              t.border,
+            backgroundColor:
+              t.surface,
           },
         ]}
       >
-
         {/* Mark Urgent */}
+
         {section === 'work' && (
           <Pressable
             onPress={() =>
-              setUrgent(value => !value)
+              setUrgent(
+                value => !value
+              )
             }
             style={[
               styles.urgentButton,
               {
-                backgroundColor: urgent
-                  ? t.riskBg
-                  : t.surface2,
-                borderColor: urgent
-                  ? t.risk
-                  : t.border,
+                backgroundColor:
+                  urgent
+                    ? t.riskBg
+                    : t.surface2,
+                borderColor:
+                  urgent
+                    ? t.risk
+                    : t.border,
               },
             ]}
           >
             <AlertTriangle
               size={16}
               color={
-                urgent ? t.risk : t.muted
+                urgent
+                  ? t.risk
+                  : t.muted
               }
             />
 
@@ -679,9 +1107,10 @@ const task = tasks[section].find(item => item.id === id)
               style={[
                 styles.urgentText,
                 {
-                  color: urgent
-                    ? t.risk
-                    : t.muted,
+                  color:
+                    urgent
+                      ? t.risk
+                      : t.muted,
                 },
               ]}
             >
@@ -693,12 +1122,16 @@ const task = tasks[section].find(item => item.id === id)
         )}
 
         {/* Mark Complete */}
+
         <Pressable
-          onPress={handleComplete}
+          onPress={
+            handleComplete
+          }
           style={[
             styles.completeButton,
             {
-              backgroundColor: t.success,
+              backgroundColor:
+                t.success,
             },
           ]}
         >
@@ -707,13 +1140,16 @@ const task = tasks[section].find(item => item.id === id)
             color="#FFFFFF"
           />
 
-          <Text style={styles.completeText}>
+          <Text
+            style={
+              styles.completeText
+            }
+          >
             Mark Complete
           </Text>
         </Pressable>
-
       </View>
-    </View>
+    </SafeAreaView>
   )
 }
 
@@ -872,6 +1308,7 @@ const styles = StyleSheet.create({
     padding: 16,
     borderWidth: 1,
     marginBottom: 16,
+    marginTop: 12,
   },
 
   priorityHeader: {

@@ -17,7 +17,7 @@ import {
   Check,
 } from '../components/icons'
 import type { Task } from '../types'
-
+import { SafeAreaView } from 'react-native-safe-area-context'
 function classifySection(
   title: string
 ): 'work' | 'personal' | 'leisure' {
@@ -126,7 +126,7 @@ export default function AddTaskScreen() {
 
   if (saved && assignedSection) {
     return (
-      <View
+      <SafeAreaView
         style={[
           styles.savedContainer,
           { backgroundColor: t.bg },
@@ -168,7 +168,7 @@ export default function AddTaskScreen() {
             </Text>
           </Text>
         </View>
-      </View>
+      </SafeAreaView>
     )
   }
 
@@ -177,7 +177,7 @@ export default function AddTaskScreen() {
   // -------------------------
 
   return (
-    <View
+    <SafeAreaView
       style={[
         styles.container,
         { backgroundColor: t.bg },
@@ -453,7 +453,7 @@ export default function AddTaskScreen() {
           </Text>
         </Pressable>
       </ScrollView>
-    </View>
+    </SafeAreaView>
   )
 }
 
