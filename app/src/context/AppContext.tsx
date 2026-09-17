@@ -28,6 +28,7 @@ export function AppProvider({ children }: AppProviderProps) {
   // Dark mode
   // -----------------------------
   const [darkMode, setDarkMode] = useState(false)
+
   const toggleDark = () => setDarkMode((prev) => !prev)
 
   // -----------------------------
@@ -39,11 +40,20 @@ export function AppProvider({ children }: AppProviderProps) {
     leisure: [],
   })
 
-  // Fetch real tasks from Supabase — no demo/mock data
+  // -----------------------------
+  // Fetch tasks from Supabase
+  // -----------------------------
   const fetchTasks = async () => {
-    const { data: { user: authUser } } = await supabase.auth.getUser()
+    const {
+      data: { user: authUser },
+    } = await supabase.auth.getUser()
+
     if (!authUser) {
-      setTasks({ work: [], personal: [], leisure: [] })
+      setTasks({
+        work: [],
+        personal: [],
+        leisure: [],
+      })
       return
     }
 
@@ -58,72 +68,133 @@ export function AppProvider({ children }: AppProviderProps) {
       return
     }
 
-    const groupedTasks: TaskStore = { work: [], personal: [], leisure: [] }
+    const groupedTasks: TaskStore = {
+      work: [],
+      personal: [],
+      leisure: [],
+    }
 
     data?.forEach((row) => {
-      if (!['work', 'personal', 'leisure'].includes(row.section)) return
+      if (!['work', 'personal', 'leisure'].includes(row.section)) {
+        return
+      }
 
-      const section = row.section as 'work' | 'personal' | 'leisure'
+      const section = row.section as
+        | 'work'
+        | 'personal'
+        | 'leisure'
 
-  const task: Task = {
-    id: row.id,
-    title: row.title,
-    section,
-    brief: row.brief ?? undefined,
-    deadline: row.deadline
-      ? new Date(row.deadline).toLocaleDateString()
-      : 'No deadline set',
-    priority: 'medium',
-    priorityScore: row.priority_score ?? undefined,
-    priorityWhy: row.explanation ?? undefined,
-    estimatedTime:
-      row.estimated_time_minutes != null
-        ? `${row.estimated_time_minutes} min`
-        : undefined,
-    blocked: row.is_blocked ?? false,
-    dueToday: row.deadline
-      ? new Date(row.deadline).toDateString() === new Date().toDateString()
-      : false,
-    atRisk: row.is_blocked === true,
-  }
+      const task: Task = {
+        id: row.id,
+        title: row.title,
+        section,
 
-  groupedTasks[section].push(task)
-})
+        brief: row.brief ?? undefined,
+
+        // Keep the original ISO timestamp from Supabase.
+        // Do not convert it to a display date here.
+        deadline: row.deadline ?? '',
+
+        priority: 'medium',
+
+        priorityScore:
+          row.priority_score ?? undefined,
+
+        priorityWhy:
+          row.explanation ?? undefined,
+
+        // Keep only the numeric value here.
+        // The UI will add "min" when displaying it.
+        estimatedTime:
+          row.estimated_time_minutes != null
+            ? String(row.estimated_time_minutes)
+            : undefined,
+
+        blocked:
+          row.is_blocked ?? false,
+
+        dueToday: row.deadline
+          ? new Date(row.deadline).toDateString() ===
+            new Date().toDateString()
+          : false,
+
+        atRisk:
+          row.is_blocked === true,
+      }
+
+      groupedTasks[section].push(task)
+    })
 
     setTasks(groupedTasks)
   }
 
+  // -----------------------------
   // Load tasks once on app start
+  // -----------------------------
   useEffect(() => {
     fetchTasks()
   }, [])
 
+  // -----------------------------
+  // Complete task
+  // -----------------------------
   const completeTask = (id: string) => {
-    const allTasks = [...tasks.work, ...tasks.personal, ...tasks.leisure]
-    const task = allTasks.find((task) => task.id === id)
+    const allTasks = [
+      ...tasks.work,
+      ...tasks.personal,
+      ...tasks.leisure,
+    ]
+
+    const task = allTasks.find(
+      (task) => task.id === id
+    )
 
     if (task) {
-      const today = new Date().toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric',
-      })
+      const today = new Date().toLocaleDateString(
+        'en-US',
+        {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+        }
+      )
+
       setHistory((prev) => [
-        { id: `h${Date.now()}`, title: task.title, section: task.section, type: 'completed', date: today },
+        {
+          id: `h${Date.now()}`,
+          title: task.title,
+          section: task.section,
+          type: 'completed',
+          date: today,
+        },
         ...prev,
       ])
     }
 
     setTasks((prev) => ({
-      work: prev.work.filter((task) => task.id !== id),
-      personal: prev.personal.filter((task) => task.id !== id),
-      leisure: prev.leisure.filter((task) => task.id !== id),
+      work: prev.work.filter(
+        (task) => task.id !== id
+      ),
+      personal: prev.personal.filter(
+        (task) => task.id !== id
+      ),
+      leisure: prev.leisure.filter(
+        (task) => task.id !== id
+      ),
     }))
   }
 
+  // -----------------------------
+  // Add task
+  // -----------------------------
   const addTask = async (task: Task) => {
-    const { data: { user: authUser } } = await supabase.auth.getUser()
-    if (!authUser) throw new Error('User is not authenticated')
+    const {
+      data: { user: authUser },
+    } = await supabase.auth.getUser()
+
+    if (!authUser) {
+      throw new Error('User is not authenticated')
+    }
 
     const { data, error } = await supabase
       .from('tasks')
@@ -132,10 +203,12 @@ export function AppProvider({ children }: AppProviderProps) {
         title: task.title,
         section: task.section,
         brief: task.brief ?? null,
+
         deadline: null,
         estimated_time_minutes: null,
         priority_score: null,
         explanation: null,
+
         status: 'pending',
         is_blocked: false,
         source_type: 'text',
@@ -144,36 +217,54 @@ export function AppProvider({ children }: AppProviderProps) {
       .single()
 
     if (error) {
-      console.error('Error creating task:', error)
+      console.error(
+        'Error creating task:',
+        error
+      )
       throw error
     }
 
-    const savedTask: Task = { ...task, id: data.id }
+    const savedTask: Task = {
+      ...task,
+      id: data.id,
+    }
 
     setTasks((prev) => ({
       ...prev,
-      [savedTask.section]: [savedTask, ...prev[savedTask.section]],
+      [savedTask.section]: [
+        savedTask,
+        ...prev[savedTask.section],
+      ],
     }))
   }
 
   // -----------------------------
   // Energy
   // -----------------------------
-  const [energy, setEnergy] = useState<EnergyLevel>(null)
+  const [energy, setEnergy] =
+    useState<EnergyLevel>(null)
 
   // -----------------------------
   // History
   // -----------------------------
-  const [history, setHistory] = useState(initialHistory)
+  const [history, setHistory] =
+    useState(initialHistory)
 
   // -----------------------------
-  // User (real, from Supabase)
+  // User
   // -----------------------------
-  const [user, setUser] = useState({ name: '', email: '', profession: '' })
+  const [user, setUser] = useState({
+    name: '',
+    email: '',
+    profession: '',
+  })
 
   useEffect(() => {
     async function loadUser() {
-      const { data: { user: authUser } } = await supabase.auth.getUser()
+      const {
+        data: { user: authUser },
+      } = await supabase.auth.getUser()
+
       if (!authUser) return
 
       const { data: profile } = await supabase
@@ -185,48 +276,174 @@ export function AppProvider({ children }: AppProviderProps) {
       setUser({
         name: profile?.name ?? '',
         email: authUser.email ?? '',
-        profession: profile?.profession ?? '',
+        profession:
+          profile?.profession ?? '',
       })
     }
+
     loadUser()
   }, [])
 
   // -----------------------------
   // Theme
   // -----------------------------
-  const t = darkMode ? darkTheme : lightTheme
+  const t = darkMode
+    ? darkTheme
+    : lightTheme
 
   // -----------------------------
   // Derived task information
   // -----------------------------
-  const allTasks = [...tasks.work, ...tasks.personal, ...tasks.leisure]
-  const dueTodayCount = allTasks.filter((task) => task.dueToday).length
-  const atRiskCount = allTasks.filter((task) => task.atRisk).length
-  const suggestedTask = tasks.work[0] ?? tasks.personal[0] ?? null
+  const allTasks = [
+    ...tasks.work,
+    ...tasks.personal,
+    ...tasks.leisure,
+  ]
 
+  const dueTodayCount =
+    allTasks.filter(
+      (task) => task.dueToday
+    ).length
+
+  const atRiskCount =
+    allTasks.filter(
+      (task) => task.atRisk
+    ).length
+
+  const suggestedTask =
+    tasks.work[0] ??
+    tasks.personal[0] ??
+    null
+
+  // -----------------------------
+  // Update task information
+  // -----------------------------
+  const updateTask = async (
+    id: string,
+    section:
+      | 'work'
+      | 'personal'
+      | 'leisure',
+    updates: Partial<{
+      title: string
+      brief: string | null
+      deadline: string | null
+      estimated_time_minutes:
+        | number
+        | null
+      status: string
+    }>
+  ) => {
+    const { error } = await supabase
+      .from('tasks')
+      .update(updates)
+      .eq('id', id)
+
+    if (error) {
+      console.error(
+        'Error updating task:',
+        error
+      )
+      throw error
+    }
+
+    setTasks((prev) => ({
+      ...prev,
+
+      [section]: prev[section].map((t) =>
+        t.id === id
+          ? {
+              ...t,
+
+              // -----------------------------
+              // Title
+              // -----------------------------
+              title:
+                updates.title ?? t.title,
+
+              // -----------------------------
+              // Brief
+              // -----------------------------
+              brief:
+                updates.brief !== undefined
+                  ? updates.brief ?? undefined
+                  : t.brief,
+
+              // -----------------------------
+              // Deadline
+              // -----------------------------
+              // Keep ISO timestamp in state.
+              // Do not convert to locale string.
+              deadline:
+                updates.deadline !== undefined
+                  ? updates.deadline ?? ''
+                  : t.deadline,
+
+              // -----------------------------
+              // Estimated time
+              // -----------------------------
+              // Keep only the number in state.
+              // Example: "50", not "50 min".
+              estimatedTime:
+                updates.estimated_time_minutes !==
+                undefined
+                  ? updates.estimated_time_minutes !=
+                    null
+                    ? String(
+                        updates.estimated_time_minutes
+                      )
+                    : undefined
+                  : t.estimatedTime,
+            }
+          : t
+      ),
+    }))
+  }
+
+  // -----------------------------
+  // Context value
+  // -----------------------------
   const value: AppContextType = {
     darkMode,
     toggleDark,
     t,
+
     tasks,
+
     completeTask,
     addTask,
+    updateTask,
+
     energy,
     setEnergy,
+
     user,
+
     dueTodayCount,
     atRiskCount,
     suggestedTask,
+
     history,
   }
 
-  return <AppContext.Provider value={value}>{children}</AppContext.Provider>
+  return (
+    <AppContext.Provider value={value}>
+      {children}
+    </AppContext.Provider>
+  )
 }
 
+// -----------------------------
+// useApp hook
+// -----------------------------
 export function useApp(): AppContextType {
   const context = useContext(AppContext)
+
   if (!context) {
-    throw new Error('useApp must be used inside AppProvider')
+    throw new Error(
+      'useApp must be used inside AppProvider'
+    )
   }
+
   return context
 }

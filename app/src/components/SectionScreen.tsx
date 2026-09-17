@@ -7,7 +7,7 @@ import {
   StyleSheet,
 } from 'react-native'
 import { useRouter, type Href } from 'expo-router'
-
+import { SafeAreaView } from 'react-native-safe-area-context'
 import { useApp } from '../context/AppContext'
 import BottomTabBar from './BottomTabBar'
 import FAB from './FAB'
@@ -56,7 +56,7 @@ export default function SectionScreen({ section }: Props) {
   }
 
   return (
-    <View
+    <SafeAreaView
       style={[
         styles.container,
         {
@@ -241,7 +241,7 @@ export default function SectionScreen({ section }: Props) {
 
       {/* Add task */}
       <FAB />
-    </View>
+    </SafeAreaView>
   )
 }
 

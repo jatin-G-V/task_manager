@@ -7,7 +7,7 @@ import {
 } from 'react-native'
 import { LinearGradient } from 'expo-linear-gradient'
 import { useRouter } from 'expo-router'
-
+import { SafeAreaView } from 'react-native-safe-area-context'
 import { useApp } from '../context/AppContext'
 import { supabase } from '../lib/supabase'
 
@@ -51,7 +51,7 @@ export default function SideDrawer() {
     .toUpperCase()
 
   return (
-    <View
+    <SafeAreaView
       style={[
         styles.container,
         {
@@ -281,7 +281,7 @@ export default function SideDrawer() {
           </Text>
         </Pressable>
       </View>
-    </View>
+    </SafeAreaView>
   )
 }
 

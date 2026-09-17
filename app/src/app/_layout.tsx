@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Slot, useRouter, useSegments } from 'expo-router'
 import { supabase } from '../lib/supabase'
 import { AppProvider } from '../context/AppContext'
+import { SafeAreaProvider } from 'react-native-safe-area-context'
 
 export default function RootLayout() {
   const [session, setSession] = useState<any>(null)
@@ -50,10 +51,15 @@ export default function RootLayout() {
     return null
   }
 
-  return (
+  return  (
+  <SafeAreaProvider>
+    
+  
+
     <AppProvider>
       <Slot />
     </AppProvider>
+    </SafeAreaProvider>
   )
 }
 
