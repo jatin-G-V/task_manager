@@ -134,6 +134,21 @@ export function AppProvider({ children }: AppProviderProps) {
   useEffect(() => {
   fetchTasks()
   fetchHistory()
+  loadUser()
+
+  const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+    if (session) {
+      fetchTasks()
+      fetchHistory()
+      loadUser()
+    } else {
+      setTasks({ work: [], personal: [], leisure: [] })
+      setHistory([])
+      setUser({ name: '', email: '', profession: '' })
+    }
+  })
+
+  return () => listener.subscription.unsubscribe()
 }, [])
 
   // -----------------------------
@@ -320,30 +335,26 @@ const completeTask = async (id: string) => {
     profession: '',
   })
 
-  useEffect(() => {
-    async function loadUser() {
-      const {
-        data: { user: authUser },
-      } = await supabase.auth.getUser()
+const loadUser = async () => {
+  const { data: { user: authUser } } = await supabase.auth.getUser()
 
-      if (!authUser) return
+  if (!authUser) {
+    setUser({ name: '', email: '', profession: '' })
+    return
+  }
 
-      const { data: profile } = await supabase
-        .from('user_profile')
-        .select('name, profession')
-        .eq('user_id', authUser.id)
-        .single()
+  const { data: profile } = await supabase
+    .from('user_profile')
+    .select('name, profession')
+    .eq('user_id', authUser.id)
+    .single()
 
-      setUser({
-        name: profile?.name ?? '',
-        email: authUser.email ?? '',
-        profession:
-          profile?.profession ?? '',
-      })
-    }
-
-    loadUser()
-  }, [])
+  setUser({
+    name: profile?.name ?? '',
+    email: authUser.email ?? '',
+    profession: profile?.profession ?? '',
+  })
+}
 
   // -----------------------------
   // Theme
