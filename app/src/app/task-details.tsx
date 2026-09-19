@@ -311,10 +311,17 @@ const onTimeChange = (
    * --------------------------------------------------
    */
 
-  const handleComplete = () => {
-    completeTask(task.id)
+  const handleComplete = async () => {
+  try {
+    await completeTask(task.id)
     router.back()
+  } catch (e) {
+    console.error(
+      'Failed to complete task:',
+      e
+    )
   }
+}
 
   /*
    * --------------------------------------------------

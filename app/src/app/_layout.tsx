@@ -53,9 +53,6 @@ export default function RootLayout() {
 
   return  (
   <SafeAreaProvider>
-    
-  
-
     <AppProvider>
       <Slot />
     </AppProvider>
