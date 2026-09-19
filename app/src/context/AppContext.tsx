@@ -14,7 +14,6 @@ import type {
 } from '../types'
 
 import { lightTheme, darkTheme } from '../theme'
-import { initialHistory } from '../data'
 import { supabase } from '../lib/supabase'
 
 const AppContext = createContext<AppContextType | null>(null)
@@ -58,10 +57,11 @@ export function AppProvider({ children }: AppProviderProps) {
     }
 
     const { data, error } = await supabase
-      .from('tasks')
-      .select('*')
-      .eq('user_id', authUser.id)
-      .order('created_at', { ascending: false })
+  .from('tasks')
+  .select('*')
+  .eq('user_id', authUser.id)
+  .neq('status', 'completed')
+  .order('created_at', { ascending: false })
 
     if (error) {
       console.error('Error fetching tasks:', error)
@@ -132,57 +132,76 @@ export function AppProvider({ children }: AppProviderProps) {
   // Load tasks once on app start
   // -----------------------------
   useEffect(() => {
-    fetchTasks()
-  }, [])
+  fetchTasks()
+  fetchHistory()
+}, [])
 
   // -----------------------------
   // Complete task
   // -----------------------------
-  const completeTask = (id: string) => {
-    const allTasks = [
-      ...tasks.work,
-      ...tasks.personal,
-      ...tasks.leisure,
-    ]
+const completeTask = async (id: string) => {
+  const allTasks = [
+    ...tasks.work,
+    ...tasks.personal,
+    ...tasks.leisure,
+  ]
 
-    const task = allTasks.find(
-      (task) => task.id === id
+  const task = allTasks.find(
+    (task) => task.id === id
+  )
+
+  if (!task) return
+
+  const completedAt = new Date().toISOString()
+
+  const { error } = await supabase
+    .from('tasks')
+    .update({
+      status: 'completed',
+      completed_at: completedAt,
+    })
+    .eq('id', id)
+
+  if (error) {
+    console.error(
+      'Error completing task:',
+      error
     )
-
-    if (task) {
-      const today = new Date().toLocaleDateString(
-        'en-US',
-        {
-          month: 'short',
-          day: 'numeric',
-          year: 'numeric',
-        }
-      )
-
-      setHistory((prev) => [
-        {
-          id: `h${Date.now()}`,
-          title: task.title,
-          section: task.section,
-          type: 'completed',
-          date: today,
-        },
-        ...prev,
-      ])
-    }
-
-    setTasks((prev) => ({
-      work: prev.work.filter(
-        (task) => task.id !== id
-      ),
-      personal: prev.personal.filter(
-        (task) => task.id !== id
-      ),
-      leisure: prev.leisure.filter(
-        (task) => task.id !== id
-      ),
-    }))
+    throw error
   }
+
+  const today = new Date().toLocaleDateString(
+    'en-US',
+    {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    }
+  )
+
+  setHistory((prev) => [
+    {
+      id: task.id,
+      title: task.title,
+      section: task.section,
+      type: 'completed',
+      date: today,
+    },
+    ...prev,
+  ])
+
+  setTasks((prev) => ({
+    work: prev.work.filter(
+      (task) => task.id !== id
+    ),
+    personal: prev.personal.filter(
+      (task) => task.id !== id
+    ),
+    leisure: prev.leisure.filter(
+      (task) => task.id !== id
+    ),
+  }))
+}
 
   // -----------------------------
   // Add task
@@ -248,7 +267,49 @@ export function AppProvider({ children }: AppProviderProps) {
   // History
   // -----------------------------
   const [history, setHistory] =
-    useState(initialHistory)
+  useState<AppContextType['history']>([])
+
+  const fetchHistory = async () => {
+    const {
+      data: { user: authUser },
+    } = await supabase.auth.getUser()
+
+    if (!authUser) {
+      setHistory([])
+      return
+    }
+
+    const { data, error } = await supabase
+      .from('tasks')
+      .select('id, title, section, status, completed_at')
+      .eq('user_id', authUser.id)
+      .eq('status', 'completed')
+      .order('completed_at', { ascending: false })
+
+    if (error) {
+      console.error('Error fetching history:', error)
+      return
+    }
+
+    const completedHistory = (data ?? []).map((row) => ({
+      id: row.id,
+      title: row.title,
+      section: row.section,
+      type: 'completed' as const,
+      date: row.completed_at
+        ? new Date(row.completed_at).toLocaleDateString(
+            'en-US',
+            {
+              month: 'short',
+              day: 'numeric',
+              year: 'numeric',
+            }
+          )
+        : '',
+  }))
+
+  setHistory(completedHistory)
+}
 
   // -----------------------------
   // User

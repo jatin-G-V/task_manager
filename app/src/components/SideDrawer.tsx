@@ -17,9 +17,9 @@ export default function SideDrawer() {
 
   const items = [
     {
-      label: 'History & Archive',
+      label: 'History',
       icon: '▣',
-      onTap: () => {},
+      onTap: () => router.push('/history'),
     },
     {
       label: 'Notification Settings',
