@@ -1,22 +1,3 @@
-export type Screen =
-  | 'login'
-  | 'signup'
-  | 'dashboard'
-  | 'drawer'
-  | 'digest'
-  | 'work'
-  | 'personal'
-  | 'leisure'
-  | 'task-detail'
-  | 'add-task'
-  | 'history'
-  | 'notifications'
-
-export type TabSection =
-  | 'home'
-  | 'work'
-  | 'personal'
-  | 'leisure'
 
 export type EnergyLevel =
   | 'low'
@@ -56,17 +37,6 @@ export interface User {
   profession: string
 }
 
-export interface NavState {
-  screen: Screen
-  activeTab: TabSection
-  selectedTask?: Task
-  previousScreen?: Screen
-}
-
-export interface NavOpts {
-  task?: Task
-  tab?: TabSection
-}
 
 export interface Theme {
   bg: string

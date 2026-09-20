@@ -43,12 +43,12 @@ export default function DashboardScreen() {
   const [chatInput, setChatInput] = useState('')
 
   const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: 'init',
-      role: 'ai',
-      text: 'Good morning, Jatin. You have a busy day — let me know what you need help with.',
-    },
-  ])
+  {
+    id: 'init',
+    role: 'ai',
+    text: `Good morning, ${user.name ? user.name.split(' ')[0] : 'there'}. You have a busy day — let me know what you need help with.`,
+  },
+])
 
   const [chatActive, setChatActive] = useState(false)
 

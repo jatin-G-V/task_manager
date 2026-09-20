@@ -1,284 +1,79 @@
 import React from 'react'
-import {
-  View,
-  Text,
-  Pressable,
-  StyleSheet,
-} from 'react-native'
+import { View, Text, Pressable, StyleSheet } from 'react-native'
 import { LinearGradient } from 'expo-linear-gradient'
 import { useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { useApp } from '../context/AppContext'
 import { supabase } from '../lib/supabase'
+import { Archive, Bell, LogOut, X, ChevronRight } from './icons'
 
 export default function SideDrawer() {
   const { t, user } = useApp()
   const router = useRouter()
 
   const items = [
-    {
-      label: 'History',
-      icon: '▣',
-      onTap: () => router.push('/history'),
-    },
-    {
-      label: 'Notification Settings',
-      icon: '●',
-      onTap: () => {},
-    },
+    { label: 'History', icon: Archive, onTap: () => router.push('/history') },
+    { label: 'Notification Settings', icon: Bell, onTap: () => {} },
   ]
 
   const handleLogout = async () => {
     await supabase.auth.signOut()
   }
 
-  const userName =
-    user?.name && user.name.trim().length > 0
-      ? user.name
-      : 'User'
-
-  const userEmail =
-    user?.email && user.email.trim().length > 0
-      ? user.email
-      : ''
-
-  const initials = userName
-    .split(' ')
-    .filter(Boolean)
-    .map((name) => name[0])
-    .join('')
-    .slice(0, 2)
-    .toUpperCase()
+  const userName = user?.name && user.name.trim().length > 0 ? user.name : 'User'
+  const userEmail = user?.email && user.email.trim().length > 0 ? user.email : ''
+  const initials = userName.split(' ').filter(Boolean).map((n) => n[0]).join('').slice(0, 2).toUpperCase()
 
   return (
-    <SafeAreaView
-      style={[
-        styles.container,
-        {
-          backgroundColor: t.bg,
-        },
-      ]}
-    >
+    <SafeAreaView style={[styles.container, { backgroundColor: t.bg }]}>
       {/* HEADER */}
-      <View
-        style={[
-          styles.header,
-          {
-            borderBottomColor: t.border,
-          },
-        ]}
-      >
-        <Text
-          style={[
-            styles.headerTitle,
-            {
-              color: t.text,
-            },
-          ]}
-        >
-          Menu
-        </Text>
-
-        <Pressable
-          onPress={() => router.back()}
-          style={[
-            styles.closeButton,
-            {
-              backgroundColor: t.surface2,
-            },
-          ]}
-        >
-          <Text
-            style={[
-              styles.closeText,
-              {
-                color: t.muted,
-              },
-            ]}
-          >
-            ×
-          </Text>
+      <View style={[styles.header, { borderBottomColor: t.border }]}>
+        <Text style={[styles.headerTitle, { color: t.text }]}>Menu</Text>
+        <Pressable onPress={() => router.back()} style={[styles.closeButton, { backgroundColor: t.surface2 }]}>
+          <X size={18} color={t.muted} />
         </Pressable>
       </View>
 
       {/* USER CARD */}
-      <View
-        style={[
-          styles.userCard,
-          {
-            backgroundColor: t.surface,
-            borderColor: t.border,
-          },
-        ]}
-      >
-        <LinearGradient
-          colors={[
-            t.primary,
-            `${t.primary}88`,
-          ]}
-          start={{
-            x: 0,
-            y: 0,
-          }}
-          end={{
-            x: 1,
-            y: 1,
-          }}
-          style={styles.avatar}
-        >
-          <Text style={styles.avatarText}>
-            {initials || 'U'}
-          </Text>
+      <View style={[styles.userCard, { backgroundColor: t.surface, borderColor: t.border }]}>
+        <LinearGradient colors={[t.primary, `${t.primary}88`]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.avatar}>
+          <Text style={styles.avatarText}>{initials || 'U'}</Text>
         </LinearGradient>
 
-        <Text
-          style={[
-            styles.userName,
-            {
-              color: t.text,
-            },
-          ]}
-        >
-          {userName}
-        </Text>
+        <Text style={[styles.userName, { color: t.text }]}>{userName}</Text>
 
-        {userEmail ? (
-          <Text
-            style={[
-              styles.userEmail,
-              {
-                color: t.muted,
-              },
-            ]}
-          >
-            {userEmail}
-          </Text>
-        ) : null}
+        {userEmail ? <Text style={[styles.userEmail, { color: t.muted }]}>{userEmail}</Text> : null}
 
         {user?.profession ? (
-          <View
-            style={[
-              styles.professionBadge,
-              {
-                backgroundColor: t.surface2,
-              },
-            ]}
-          >
-            <Text
-              style={[
-                styles.professionText,
-                {
-                  color: t.muted,
-                },
-              ]}
-            >
-              {user.profession}
-            </Text>
+          <View style={[styles.professionBadge, { backgroundColor: t.surface2 }]}>
+            <Text style={[styles.professionText, { color: t.muted }]}>{user.profession}</Text>
           </View>
         ) : null}
       </View>
 
       {/* MENU ITEMS */}
       <View style={styles.navContainer}>
-        {items.map((item) => (
-          <Pressable
-            key={item.label}
-            onPress={item.onTap}
-            style={[
-              styles.navItem,
-              {
-                backgroundColor: t.surface,
-                borderColor: t.border,
-              },
-            ]}
-          >
-            <View
-              style={[
-                styles.iconContainer,
-                {
-                  backgroundColor: t.surface2,
-                },
-              ]}
-            >
-              <Text
-                style={[
-                  styles.iconText,
-                  {
-                    color: t.muted,
-                  },
-                ]}
-              >
-                {item.icon}
-              </Text>
-            </View>
-
-            <Text
-              style={[
-                styles.navLabel,
-                {
-                  color: t.text,
-                },
-              ]}
-            >
-              {item.label}
-            </Text>
-
-            <Text
-              style={[
-                styles.chevron,
-                {
-                  color: t.muted,
-                },
-              ]}
-            >
-              ›
-            </Text>
-          </Pressable>
-        ))}
+        {items.map((item) => {
+          const Icon = item.icon
+          return (
+            <Pressable key={item.label} onPress={item.onTap} style={[styles.navItem, { backgroundColor: t.surface, borderColor: t.border }]}>
+              <View style={[styles.iconContainer, { backgroundColor: t.surface2 }]}>
+                <Icon size={18} color={t.muted} />
+              </View>
+              <Text style={[styles.navLabel, { color: t.text }]}>{item.label}</Text>
+              <ChevronRight size={16} color={t.muted} />
+            </Pressable>
+          )
+        })}
       </View>
 
       {/* LOGOUT */}
       <View style={styles.logoutContainer}>
-        <Pressable
-          onPress={handleLogout}
-          style={[
-            styles.logoutButton,
-            {
-              backgroundColor: `${t.risk}14`,
-              borderColor: `${t.risk}30`,
-            },
-          ]}
-        >
-          <View
-            style={[
-              styles.iconContainer,
-              {
-                backgroundColor: `${t.risk}20`,
-              },
-            ]}
-          >
-            <Text
-              style={[
-                styles.iconText,
-                {
-                  color: t.risk,
-                },
-              ]}
-            >
-              →
-            </Text>
+        <Pressable onPress={handleLogout} style={[styles.logoutButton, { backgroundColor: `${t.risk}14`, borderColor: `${t.risk}30` }]}>
+          <View style={[styles.iconContainer, { backgroundColor: `${t.risk}20` }]}>
+            <LogOut size={18} color={t.risk} />
           </View>
-
-          <Text
-            style={[
-              styles.logoutText,
-              {
-                color: t.risk,
-              },
-            ]}
-          >
-            Log Out
-          </Text>
+          <Text style={[styles.logoutText, { color: t.risk }]}>Log Out</Text>
         </Pressable>
       </View>
     </SafeAreaView>

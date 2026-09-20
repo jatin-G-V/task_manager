@@ -58,11 +58,12 @@ export default function SectionScreen({ section }: Props) {
   return (
     <SafeAreaView
       style={[
-        styles.container,
-        {
-          backgroundColor: t.bg,
-        },
-      ]}
+    styles.container,
+    {
+      backgroundColor: t.bg,
+    },
+  ]}
+  edges={['top']}
     >
       {/* Header */}
       <View style={styles.header}>
