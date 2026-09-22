@@ -27,7 +27,15 @@ import {
   chatSuggestions,
   getAIResponse,
 } from '../data'
-
+function formatDeadline(iso: string): string {
+  if (!iso) return 'No deadline set'
+  const date = new Date(iso)
+  const hasTime = date.getHours() !== 0 || date.getMinutes() !== 0
+  const dateStr = date.toLocaleDateString()
+  if (!hasTime) return dateStr
+  const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  return `${dateStr} · ${timeStr}`
+}
 export default function DashboardScreen() {
   const {
     t,
@@ -358,7 +366,7 @@ export default function DashboardScreen() {
                   },
                 ]}
               >
-                {suggestedTask.deadline}
+                {formatDeadline(suggestedTask.deadline)}
               </Text>
 
               <Text

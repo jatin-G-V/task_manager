@@ -26,7 +26,15 @@ const priorityDot: Record<string, string> = {
   medium: '#F5C842',
   low: '#3DAF72',
 }
-
+function formatDeadline(iso: string): string {
+  if (!iso) return 'No deadline set'
+  const date = new Date(iso)
+  const hasTime = date.getHours() !== 0 || date.getMinutes() !== 0
+  const dateStr = date.toLocaleDateString()
+  if (!hasTime) return dateStr
+  const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  return `${dateStr} · ${timeStr}`
+}
 export default function TaskCard({
   task,
   variant,
@@ -114,7 +122,7 @@ export default function TaskCard({
                   },
                 ]}
               >
-                {task.deadline}
+                {formatDeadline(task.deadline)}
               </Text>
             </View>
 

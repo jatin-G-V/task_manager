@@ -126,53 +126,24 @@ export default function TaskDetailScreen() {
     }
   }
 
- const onDateChange = (
-  event: any,
-  selected?: Date
-) => {
-  setShowDatePicker(false)
-
-  if (
-    event.type === 'dismissed' ||
-    !selected
-  ) {
-    return
+ const onDateChange = (event: any, selected?: Date) => {
+  if (Platform.OS !== 'ios') {
+    setShowDatePicker(false)
   }
+
+  if (event.type === 'dismissed' || !selected) return
 
   const merged = new Date(selected)
 
-  /*
-   * If a time was already selected,
-   * preserve that time when changing the date.
-   */
   if (deadlineDate && hasTime) {
-    merged.setHours(
-      deadlineDate.getHours(),
-      deadlineDate.getMinutes(),
-      0,
-      0
-    )
+    merged.setHours(deadlineDate.getHours(), deadlineDate.getMinutes(), 0, 0)
   } else {
-    /*
-     * No time selected yet.
-     * Treat the selected date as valid
-     * until the end of that day.
-     */
-    merged.setHours(
-      23,
-      59,
-      0,
-      0
-    )
+    merged.setHours(23, 59, 0, 0)
   }
 
   const now = new Date()
-
   if (merged < now) {
-    showAlert(
-      'Invalid deadline',
-      "You can't set a deadline in the past."
-    )
+    showAlert('Invalid deadline', "You can't set a deadline in the past.")
     return
   }
 
@@ -704,23 +675,24 @@ const onTimeChange = (
         {/* Date Picker */}
 
         {showDatePicker && (
-          <DateTimePicker
-            value={
-              deadlineDate ??
-              new Date()
-            }
-            mode="date"
-            display={
-              Platform.OS === 'ios'
-                ? 'inline'
-                : 'default'
-            }
-            themeVariant="light"
-            onChange={
-              onDateChange
-            }
-          />
-        )}
+  <View style={{ backgroundColor: t.surface, borderRadius: 12, marginTop: 8 }}>
+    {Platform.OS === 'ios' && (
+      <View style={{ flexDirection: 'row', justifyContent: 'flex-end', padding: 8 }}>
+        <Pressable onPress={() => setShowDatePicker(false)}>
+          <Text style={{ color: t.primary, fontWeight: '600', fontSize: 15 }}>Done</Text>
+        </Pressable>
+      </View>
+    )}
+
+    <DateTimePicker
+      value={deadlineDate ?? new Date()}
+      mode="date"
+      display={Platform.OS === 'ios' ? 'inline' : 'default'}
+      themeVariant="light"
+      onChange={onDateChange}
+    />
+  </View>
+)}
 
         {/* Time Picker */}
 
