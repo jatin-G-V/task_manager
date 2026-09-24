@@ -8,6 +8,7 @@ import {
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
+  Button,
 } from 'react-native'
 import { useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
@@ -28,6 +29,7 @@ import {
   chatSuggestions,
   getAIResponse,
 } from '../data'
+import { apiFetch } from '../lib/apiClient'
 function formatDeadline(iso: string): string {
   if (!iso) return 'No deadline set'
   const date = new Date(iso)
@@ -112,6 +114,26 @@ export default function DashboardScreen() {
     }
   )
   
+  const testTasksAPI = async () => {
+  try {
+    const result = await apiFetch('/tasks');
+    console.log('TASKS:', result);
+  } catch (error) {
+    console.log('TASKS ERROR:', error);
+  }
+};
+const testDeleteTask = async () => {
+  try {
+    const result = await apiFetch('/tasks/11b787b9-f51e-427b-b695-bcb30e9fc900', {
+      method: 'DELETE',
+    });
+
+    console.log('DELETED TASK:', result);
+  } catch (error) {
+    console.log('DELETE ERROR:', error);
+  }
+};
+
 
   // --------------------------------
   // UI
@@ -252,7 +274,7 @@ export default function DashboardScreen() {
                 },
               ]}
             />
-
+              <Button title="Test Delete Task" onPress={testDeleteTask} />
 
             {/* At risk */}
 
