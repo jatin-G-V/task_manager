@@ -24,32 +24,8 @@ class ParsedTask(BaseModel):
 
     effort: Optional[Literal["low", "medium", "high"]] = None
     urgency: Optional[Literal["low", "medium", "high"]] = None
-    steps: Optional[List[str]] = None
 
-
-    @model_validator(mode="after")
-    def validate_task(self):
-        if not self.is_task:
-            return self
-
-        if self.schedule_type == "scheduled":
-            if not self.scheduled_start:
-                raise ValueError("Scheduled task must have scheduled_start")
-
-            if self.deadline is not None:
-                raise ValueError("Scheduled task cannot have deadline")
-
-        elif self.schedule_type == "flexible":
-            if self.scheduled_start or self.scheduled_end:
-                raise ValueError(
-                    "Flexible task cannot have scheduled_start/end"
-                )
-
-        else:
-            raise ValueError("Task must have schedule_type")
-
-        return self
-
+  
 SYSTEM_PROMPT = """
 You are an AI task parser for a personal task-management application.
 
@@ -271,8 +247,7 @@ Always return this complete structure:
   "is_recurring": false,
   "recurrence": "string or null",
   "effort": "low | medium | high | null",
-  "urgency": "low | medium | high | null",
-  "steps": null
+  "urgency": "low | medium | high | null"
 }}
 
 For non-task input, all fields except is_task must be null.

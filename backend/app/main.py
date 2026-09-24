@@ -4,8 +4,13 @@ from pydantic import BaseModel
 from app.db.supabase_client import supabase
 from app.auth import get_current_user
 from app.services.task_parser import parse_task_text
+from app.routers.tasks import router as tasks_router
+
 
 app = FastAPI()
+
+app.include_router(tasks_router)
+
 
 @app.get("/health")
 def health_check():
