@@ -15,6 +15,7 @@ import { useApp } from '../context/AppContext'
 import BottomTabBar from '../components/BottomTabBar'
 import FAB from '../components/FAB'
 
+
 import {
   ChevronRight,
   Sparkles,
@@ -110,6 +111,7 @@ export default function DashboardScreen() {
       day: 'numeric',
     }
   )
+  
 
   // --------------------------------
   // UI
