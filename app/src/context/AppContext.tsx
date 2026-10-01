@@ -22,6 +22,7 @@ interface AppProviderProps {
   children: ReactNode
 }
 
+
 export function AppProvider({ children }: AppProviderProps) {
   // -----------------------------
   // Dark mode
@@ -488,6 +489,11 @@ const loadUser = async () => {
     }))
   }
 
+  const refreshTasks = async () => {
+  await fetchTasks()
+  await fetchHistory()
+}
+
   // -----------------------------
   // Context value
   // -----------------------------
@@ -504,7 +510,7 @@ const loadUser = async () => {
 
     energy,
     setEnergy,
-
+    refreshTasks,
     user,
 
     dueTodayCount,
