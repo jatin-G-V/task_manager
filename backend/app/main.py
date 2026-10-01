@@ -5,6 +5,7 @@ from app.db.supabase_client import supabase
 from app.auth import get_current_user
 from app.services.task_parser import parse_task_text
 from app.routers.tasks import router as tasks_router
+from app.services.agent import run_agent
 
 
 app = FastAPI()
@@ -49,3 +50,15 @@ def parse_task(
             status_code=500,
             detail=str(e)
         )
+
+
+
+
+
+class ChatRequest(BaseModel):
+    messages: list[dict]
+
+@app.post("/agent/chat")
+def agent_chat(req: ChatRequest, user_id: str = Depends(get_current_user)):
+    reply, tasks_changed = run_agent(user_id, req.messages)
+    return {"reply": reply, "tasks_changed": tasks_changed}

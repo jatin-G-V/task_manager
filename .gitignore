@@ -16,4 +16,4 @@ node_modules/
 # Local editor / AI tools
 .vscode/
 .claude/
-CLAUDE.md
+CLAUDE.md.~lock.*#

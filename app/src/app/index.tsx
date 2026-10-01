@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import {
   View,
   Text,
@@ -15,8 +16,6 @@ import { SafeAreaView } from 'react-native-safe-area-context'
 import { useApp } from '../context/AppContext'
 import BottomTabBar from '../components/BottomTabBar'
 import FAB from '../components/FAB'
-
-
 import {
   ChevronRight,
   Sparkles,
@@ -47,10 +46,12 @@ export default function DashboardScreen() {
     atRiskCount,
     suggestedTask,
     tasks,
+    refreshTasks,
   } = useApp()
 
   const router = useRouter()
-
+// inside the component, alongside your other hooks:
+const insets = useSafeAreaInsets()
   const [chatInput, setChatInput] = useState('')
 
   const [messages, setMessages] = useState<ChatMessage[]>([
@@ -66,34 +67,62 @@ export default function DashboardScreen() {
   // --------------------------------
   // AI CHAT
   // --------------------------------
+const [sending, setSending] = useState(false)
 
-  const sendMessage = (text: string) => {
-    if (!text.trim()) return
+const sendMessage = async (text: string) => {
+  if (!text.trim() || sending) return
+  setSending(true)
 
-    const userMsg: ChatMessage = {
-      id: `u${Date.now()}`,
-      role: 'user',
-      text,
-    }
+  const userMsg: ChatMessage = {
+    id: `u${Date.now()}`,
+    role: 'user',
+    text,
+  }
 
-    const response = getAIResponse(text, tasks)
+  setMessages((prev) => [...prev, userMsg])
+
+  try {
+    const result = await apiFetch('/agent/chat', {
+      method: 'POST',
+      body: JSON.stringify({
+        messages: [
+          ...messages.map((msg) => ({
+            role: msg.role === 'ai' ? 'assistant' : 'user',
+            content: msg.text,
+          })),
+          { role: 'user', content: text },
+        ],
+      }),
+    })
 
     const aiMsg: ChatMessage = {
       id: `a${Date.now()}`,
       role: 'ai',
-      text: response.text,
-      taskRef: response.taskRef,
+      text: result.reply,
     }
 
-    setMessages((prev) => [
-      ...prev,
-      userMsg,
-      aiMsg,
-    ])
+    setMessages((prev) => [...prev, aiMsg])
 
-    setChatInput('')
-    setChatActive(true)
+    if (result.tasks_changed) {
+      await refreshTasks()
+    }
+  } catch (error) {
+    console.error('AGENT ERROR:', error)
+
+    const aiMsg: ChatMessage = {
+      id: `a${Date.now()}`,
+      role: 'ai',
+      text: 'Something went wrong. Please try again.',
+    }
+
+    setMessages((prev) => [...prev, aiMsg])
+  } finally {
+    setSending(false)
   }
+
+  setChatInput('')
+  setChatActive(true)
+}
 
   // --------------------------------
   // DATE
@@ -114,25 +143,10 @@ export default function DashboardScreen() {
     }
   )
   
-  const testTasksAPI = async () => {
-  try {
-    const result = await apiFetch('/tasks');
-    console.log('TASKS:', result);
-  } catch (error) {
-    console.log('TASKS ERROR:', error);
-  }
-};
-const testDeleteTask = async () => {
-  try {
-    const result = await apiFetch('/tasks/11b787b9-f51e-427b-b695-bcb30e9fc900', {
-      method: 'DELETE',
-    });
 
-    console.log('DELETED TASK:', result);
-  } catch (error) {
-    console.log('DELETE ERROR:', error);
-  }
-};
+
+const ChatWrapper = chatActive ? SafeAreaView : View
+
 
 
   // --------------------------------
@@ -274,7 +288,7 @@ const testDeleteTask = async () => {
                 },
               ]}
             />
-              <Button title="Test Delete Task" onPress={testDeleteTask} />
+              
 
             {/* At risk */}
 
@@ -414,14 +428,13 @@ const testDeleteTask = async () => {
         {/* AI ASSISTANT */}
         {/* ================================ */}
 
-        <View
+        <ChatWrapper
           style={[
             styles.aiCard,
-            {
-              backgroundColor: t.surface,
-              borderColor: t.border,
-            },
+            chatActive && styles.aiCardFullScreen,
+            { backgroundColor: t.surface, borderColor: t.border },
           ]}
+          {...(chatActive ? { edges: ['top', 'bottom'] } : {})}
         >
 
           {/* AI HEADER */}
@@ -436,7 +449,21 @@ const testDeleteTask = async () => {
           >
 
             <View style={styles.aiHeaderLeft}>
-
+              {chatActive && (
+                <Pressable
+                  onPress={() => setChatActive(false)}
+                  style={styles.chatBackButton}
+                >
+                  <Text
+                    style={[
+                      styles.chatBackText,
+                      { color: t.text },
+                    ]}
+                  >
+                    ←
+                  </Text>
+                </Pressable>
+              )}
               <View
                 style={[
                   styles.aiIcon,
@@ -705,7 +732,7 @@ const testDeleteTask = async () => {
             <Pressable
               onPress={() =>
                 sendMessage(chatInput)
-              }
+              }disabled={sending}
               style={({ pressed }) => [
                 styles.sendButton,
                 {
@@ -731,7 +758,7 @@ const testDeleteTask = async () => {
 
           </View>
 
-        </View>
+        </ChatWrapper>
 
       </SafeAreaView>
 
@@ -740,9 +767,8 @@ const testDeleteTask = async () => {
       {/* BOTTOM NAVIGATION */}
       {/* ================================ */}
 
-      <BottomTabBar />
-
-      <FAB />
+      {!chatActive && <BottomTabBar />}
+      {!chatActive && <FAB />}
 
     </KeyboardAvoidingView>
   )
@@ -1035,7 +1061,26 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     fontFamily: 'Outfit',
   },
+aiCardFullScreen: {
+  position: 'absolute',
+  top: 0,
+  left: 0,
+  right: 0,
+  bottom: 0,
+  zIndex: 999,
+  borderRadius: 0,
+  borderWidth: 0,
+},
 
+chatBackButton: {
+  marginRight: 10,
+  padding: 4,
+},
+
+chatBackText: {
+  fontSize: 28,
+  lineHeight: 30,
+},
 
   /* ================================ */
   /* TASK REFERENCE */

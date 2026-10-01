@@ -87,7 +87,7 @@ export interface AppContextType {
   dueTodayCount: number
   atRiskCount: number
   suggestedTask: Task | null
-
   history: HistoryTask[]
+  refreshTasks: () => Promise<void>
 }
 
