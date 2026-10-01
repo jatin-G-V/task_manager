@@ -1,39 +1,81 @@
-from app.services.task_parser import parse_task_text
+import json
+
+from app.services.agent_tools import add_task
 
 
-test_cases = [
-    "1. Team meeting tomorrow at 2:30 PM",
+TEST_USER_ID = "4335d308-386c-4a6d-9cdc-2da38cb11c8f"
 
-    "2. Submit the presentation on Friday at 5 PM",
-    "3. Call mom tonight at 9 PM",
 
-    "4. Doctor appointment on Monday at 11 AM",
+TEST_CASES = [
+    # "Buy milk tomorrow after work.",
 
-    "5. Gym every Tuesday and Thursday at 7 AM",
+    # "Prepare the client presentation for Friday. I need to finish the slides and review the numbers before sending it.",
 
-    "6. Go for a walk tomorrow morning",
+    # "I have a meeting with Amit tomorrow at 3 PM. It should take about 45 minutes.",
 
-    "7. Dinner with friends tomorrow evening",
+    # "Watch Interstellar tonight and relax for a while.",
 
-    "8. Watch a movie tonight",
+    # "Read the new project documentation for 40 minutes tonight.",
 
-    "9. Visit the bank on Saturday",
+    # "Fix the login bug before the client demo tomorrow. It may take a couple of hours.",
 
-    "10. Grocery shopping this Sunday afternoon"
+    # "Submit the final report Friday at 5 PM. Make sure all the numbers have been checked before submitting.",
+
+    # "I have a meeting with the client Friday at 5 PM to discuss the new requirements.",
+
+    # "Finish the presentation in the next 2 hours.",
+
+    # "Call Amit in 2 hours to discuss the deployment issue.",
+
+    # "Go to the gym every day.",
+
+    # "Go to the gym every day until December 31.",
+
+    # "Study every Monday at 7 PM for my upcoming exam.",
+
+    # "Submit the weekly report every Friday by 5 PM.",
+
+    # "Plan my Mumbai trip sometime next month. I need to check hotels, transport and places to visit.",
+
+    "Finish the monthly expense report by the end of this month.",
+
+    "Call the plumber tomorrow; it should only take around 10 minutes.",
+
+    "Prepare the quarterly client presentation. It involves collecting the results, creating the slides and reviewing everything before the meeting.",
+
+    "Buy groceries sometime this week, preferably before the weekend.",
+
+    "Urgent: send the invoice to the client today before 9 PM.",
+
+    "Hello, how are you?",
+
+    "Mumbai trip.",
+
+    "Play football with the team tomorrow evening.",
+
+    "Pay the electricity bill by next Friday and keep the receipt after payment.",
+
+    "Go to the gym every Monday until November 30 and spend around one hour there.",
 ]
 
 
-for i, text in enumerate(test_cases, start=1):
-    print("\n" + "=" * 70)
-    print(f"TEST {i}")
-    print(f"INPUT: {text}")
-    print("=" * 70)
+for i, raw_text in enumerate(TEST_CASES, 1):
+    print(f"\n{'=' * 70}")
+    print(f"T{i:02d}")
+    print(f"{'=' * 70}")
+    print(f"Input: {raw_text}")
 
     try:
-        result = parse_task_text(text)
+        result = add_task(
+            TEST_USER_ID,
+            {
+                "raw_text": raw_text
+            }
+        )
 
-        for key, value in result.items():
-            print(f"{key}: {value}")
+        print("\nRESULT: CREATED")
+        print(json.dumps(result, indent=2, default=str))
 
     except Exception as e:
-        print("ERROR:", e)
+        print("\nRESULT: FAILED")
+        print(str(e))
