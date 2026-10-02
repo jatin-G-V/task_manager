@@ -104,9 +104,22 @@ def get_task(user_id: str, args: dict) -> dict:
     return task
 
 def recommend_task(user_id: str, args: dict) -> list:
+    limit = max(1, min(int(args.get("limit", 3)), 5))
     return task_service.recommend_tasks(
         user_id,
-        limit=args.get("limit", 3)
+        limit=limit,
+        exclude_ids=args.get("exclude_ids") or [],
+    )
+
+
+def recommend_for_mood(user_id: str, args: dict) -> list:
+    energy = args.get("energy")
+    if energy not in ("low", "medium", "high"):
+        raise ValueError("energy must be low, medium or high.")
+    return task_service.recommend_tasks(
+        user_id,
+        energy=energy,
+        exclude_ids=args.get("exclude_ids") or [],
     )
 
 def daily_digest(user_id: str, args: dict) -> dict:
@@ -118,31 +131,19 @@ TOOLS = [
     "type": "function",
     "function": {
         "name": "add_task",
-        "description": (
-            "Create a task from the user's own wording; the system parses section, "
-            "effort, urgency and dates itself. Pass the wording through as-is. "
-            "dry_run=true parses and returns a preview WITHOUT saving. "
-            "confirm_draft=true saves the last previewed draft (no raw_text needed)."
-        ),
+        "description": "Create a new task from the user's own description of what they want to do. Pass their wording through as-is — do not extract section/effort/urgency/deadline yourself, the system parses it properly using the same logic as manual task entry.",
         "parameters": {
             "type": "object",
             "properties": {
                 "raw_text": {
                     "type": "string",
                     "description": "The task exactly as the user described it, in their own words."
-                },
-                "dry_run": {
-                    "type": "boolean",
-                    "description": "Preview only, do not save."
-                },
-                "confirm_draft": {
-                    "type": "boolean",
-                    "description": "Save the previously previewed draft."
                 }
             },
-            "required": []
+            "required": ["raw_text"]
         }
     }
+
 },
 {
     "type": "function",
@@ -254,16 +255,38 @@ TOOLS = [
     "type": "function",
     "function": {
         "name": "recommend_task",
-        "description": "Recommend what the user should work on right now.",
+        "description": (
+            "Recommend what to work on right now. Use when the user asks what to do next "
+            "and has NOT said anything about their mood or energy. Pass exclude_ids with "
+            "the ids already suggested if the user wants a different suggestion."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of tasks to recommend."
-                }
+                "limit": {"type": "integer", "description": "How many tasks, 1 to 5. Default 3."},
+                "exclude_ids": {"type": "array", "items": {"type": "string"}}
             },
             "required": []
+        }
+    }
+},
+{
+    "type": "function",
+    "function": {
+        "name": "recommend_for_mood",
+        "description": (
+            "Recommend tasks matched to the user's current energy. ONLY call this when the "
+            "user themselves says how they feel or how much energy they have "
+            "(e.g. 'I'm tired', 'I'm feeling sharp'). Never guess or ask for it. "
+            "tired/drained/low energy -> low; okay/normal -> medium; energetic/focused -> high."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "energy": {"type": "string", "enum": ["low", "medium", "high"]},
+                "exclude_ids": {"type": "array", "items": {"type": "string"}}
+            },
+            "required": ["energy"]
         }
     }
 },
@@ -289,5 +312,6 @@ TOOL_FUNCTIONS = {
     "list_tasks": list_tasks,
     "get_task": get_task,
     "recommend_task": recommend_task,
+    "recommend_for_mood": recommend_for_mood,
     "daily_digest": daily_digest,
 }
