@@ -640,6 +640,10 @@ Examples:
 "Pay the electricity bill" -> medium
 "Prepare the client presentation" -> medium
 "Fix a critical production issue" -> high
+"Submit the visa application" -> high
+"This is very important: finish the tax filing" -> high
+"Fix the bug that stops all users from logging in" -> high
+"Prepare for my interview" -> high
 "Urgent: send the invoice" -> urgent
 "Watch a movie tonight" -> null
 "Mumbai trip" -> low

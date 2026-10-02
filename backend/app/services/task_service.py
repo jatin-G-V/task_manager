@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from typing import Optional
-
+from app.services.recommendation import rank
 from app.db.supabase_client import supabase
 
 
@@ -159,47 +159,24 @@ def delete_tasks(user_id: str, task_ids: list) -> list:
     return result.data
 
 
-def recommend_tasks(user_id: str, limit: int = 3) -> list:
-    candidates = list_tasks(
-        user_id,
-        status="pending",
-        limit=50,
+def recommend_tasks(
+    user_id: str,
+    limit: int = 3,
+    energy: Optional[str] = None,
+    exclude_ids: Optional[list] = None,
+) -> list:
+    # list_tasks already skips completed; the engine filters blocked/dropped itself
+    tasks = list_tasks(user_id, limit=100)
+
+    # TODO(G1 timezone): `now` must be the user's local wall-clock time.
+    # Server-local datetime.now() is only correct while the server runs in the user's timezone.
+    return rank(
+        tasks,
+        now=datetime.now(),
+        limit=limit,
+        energy=energy,
+        exclude_ids=exclude_ids or [],
     )
-
-    candidates = [
-        task
-        for task in candidates
-        if not task.get("is_blocked")
-    ]
-
-    # Lower rank = higher priority.
-    #
-    # This matches the current urgency model:
-    # urgent > high > medium > low > null
-    urgency_rank = {
-        "urgent": 0,
-        "high": 1,
-        "medium": 2,
-        "low": 3,
-        None: 4,
-    }
-
-    def sort_key(task):
-        time_signal = (
-            task.get("scheduled_start")
-            if task.get("has_explicit_time")
-            else task.get("deadline")
-        )
-
-        return (
-            time_signal is None,
-            time_signal or "9999",
-            urgency_rank.get(task.get("urgency"), 4),
-        )
-
-    candidates.sort(key=sort_key)
-
-    return candidates[:limit]
 
 
 def get_daily_digest(user_id: str) -> dict:
