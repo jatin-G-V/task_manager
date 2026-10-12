@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Slot, useRouter, useSegments } from 'expo-router'
+import { GestureHandlerRootView } from 'react-native-gesture-handler'
 import { supabase } from '../lib/supabase'
 import { AppProvider } from '../context/AppContext'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
@@ -18,7 +19,7 @@ export default function RootLayout() {
       setLoading(false)
     })
 
-    // Login / logout = session update 
+    // Login / logout = session update
     const { data: listener } =
       supabase.auth.onAuthStateChange((_event, session) => {
         setSession(session)
@@ -41,7 +42,7 @@ export default function RootLayout() {
       router.replace('/login')
     }
 
-    // Logged in 
+    // Logged in
     else if (session && inAuthGroup) {
       router.replace('/')
     }
@@ -51,12 +52,13 @@ export default function RootLayout() {
     return null
   }
 
-  return  (
-  <SafeAreaProvider>
-    <AppProvider>
-      <Slot />
-    </AppProvider>
-    </SafeAreaProvider>
+  return (
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <AppProvider>
+          <Slot />
+        </AppProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   )
 }
-
