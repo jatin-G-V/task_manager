@@ -3,6 +3,7 @@ import React, {
   useContext,
   useState,
   useEffect,
+  useRef,
   type ReactNode,
 } from 'react'
 
@@ -10,6 +11,7 @@ import type {
   Task,
   AppContextType,
   TaskStore,
+  TaskUpdates,
   EnergyLevel,
 } from '../types'
 
@@ -23,6 +25,104 @@ interface AppProviderProps {
   children: ReactNode
 }
 
+// -----------------------------
+// Helpers
+// -----------------------------
+const SECTIONS = ['work', 'personal', 'leisure']
+
+type Row = Record<string, any>
+
+// The UI offers "focused"; the backend only knows low | medium | high.
+const toBackendEnergy = (value: EnergyLevel): string | null =>
+  value === 'focused' ? 'medium' : value
+
+function mapRow(
+  row: Row,
+  dueIds: Set<string>,
+  riskIds: Set<string>
+): Task | null {
+  // Older agent-created rows can have a null section. Default those to
+  // Personal so they remain reachable from the section list and editable.
+  const section = SECTIONS.includes(row.section)
+    ? row.section as Task['section']
+    : 'personal'
+
+  return {
+    id: row.id,
+    title: row.title,
+    section,
+
+    brief: row.brief ?? undefined,
+
+    // Keep original ISO timestamp.
+    deadline: row.deadline ?? null,
+
+    priority: 'medium',
+
+    priorityScore: row.priority_score ?? undefined,
+
+    priorityWhy: row.explanation ?? undefined,
+
+    // The dashboard endpoint never sends estimated_time_minutes,
+    // so this stays undefined (estimates are backend-only).
+    estimatedTime:
+      row.estimated_time_minutes != null
+        ? String(row.estimated_time_minutes)
+        : undefined,
+
+    // Decided by the backend, not guessed on the client.
+    dueToday: dueIds.has(row.id),
+    atRisk: riskIds.has(row.id),
+
+    effort: row.effort ?? undefined,
+    urgency: row.urgency ?? undefined,
+    scheduleType: row.schedule_type ?? undefined,
+    scheduledStart: row.scheduled_start ?? undefined,
+    scheduledEnd: row.scheduled_end ?? undefined,
+    hasExplicitTime: row.has_explicit_time ?? undefined,
+    isBlocked: row.is_blocked ?? false,
+    blocked: row.is_blocked ?? false,
+    isRecurring: row.is_recurring ?? undefined,
+    recurrence: row.recurrence ?? undefined,
+    recurrenceEnd: row.recurrence_end ?? undefined,
+    isOverdue: Boolean(row.is_overdue),
+
+    // pinned | deadline_risk | energy_match | top_score
+    reason: row.reason ?? undefined,
+  }
+}
+
+const EMPTY_STORE: TaskStore = {
+  work: [],
+  personal: [],
+  leisure: [],
+}
+
+const API_UPDATE_FIELD: Record<keyof TaskUpdates, string> = {
+  title: 'title',
+  brief: 'brief',
+  effort: 'effort',
+  urgency: 'urgency',
+  deadline: 'deadline',
+  scheduleType: 'schedule_type',
+  scheduledStart: 'scheduled_start',
+  scheduledEnd: 'scheduled_end',
+  hasExplicitTime: 'has_explicit_time',
+  isBlocked: 'is_blocked',
+  isRecurring: 'is_recurring',
+  recurrence: 'recurrence',
+  recurrenceEnd: 'recurrence_end',
+}
+
+function taskUpdatesToApi(updates: TaskUpdates) {
+  return Object.fromEntries(
+    Object.entries(updates).map(([key, value]) => [
+      API_UPDATE_FIELD[key as keyof TaskUpdates] ?? key,
+      value,
+    ]),
+  )
+}
+
 export function AppProvider({ children }: AppProviderProps) {
   // -----------------------------
   // Dark mode
@@ -32,238 +132,148 @@ export function AppProvider({ children }: AppProviderProps) {
   const toggleDark = () => setDarkMode((prev) => !prev)
 
   // -----------------------------
-  // Tasks
+  // Tasks (every non-completed task, grouped by section)
+  // Order inside a section: overdue, recommended (backend order), later
   // -----------------------------
-  const [tasks, setTasks] = useState<TaskStore>({
-    work: [],
-    personal: [],
-    leisure: [],
-  })
+  const [tasks, setTasks] = useState<TaskStore>(EMPTY_STORE)
+
+  // Lists straight from the backend, already ordered
+  const [rankedTasks, setRankedTasks] = useState<Task[]>([])
+  const [overdueTasks, setOverdueTasks] = useState<Task[]>([])
+  const [suggestedList, setSuggestedList] = useState<Task[]>([])
+  const [dueTodayTasks, setDueTodayTasks] = useState<Task[]>([])
+  const [atRiskTasks, setAtRiskTasks] = useState<Task[]>([])
 
   // -----------------------------
   // Energy
   // -----------------------------
-  const [energy, setEnergy] =
-    useState<EnergyLevel>(null)
+  const [energy, setEnergy] = useState<EnergyLevel>(null)
+
+  // fetchTasks is called from long-lived callbacks, so it reads the
+  // latest energy from a ref instead of a stale closure.
+  const energyRef = useRef<EnergyLevel>(null)
+  energyRef.current = energy
+
+  // Used to ignore responses of older, slower requests.
+  const requestId = useRef(0)
+  const sessionGeneration = useRef(0)
+  const activeUserId = useRef<string | null>(null)
+  const taskRequest = useRef<AbortController | null>(null)
+  const historyRequest = useRef<AbortController | null>(null)
+  const profileRequest = useRef<AbortController | null>(null)
+
+  const cancelAccountLoads = () => {
+    sessionGeneration.current += 1
+    requestId.current += 1
+    taskRequest.current?.abort()
+    historyRequest.current?.abort()
+    profileRequest.current?.abort()
+    taskRequest.current = null
+    historyRequest.current = null
+    profileRequest.current = null
+  }
 
   // -----------------------------
   // Suggested task
   // Backend is the source of truth
   // -----------------------------
-  const [suggestedTask, setSuggestedTask] =
-    useState<Task | null>(null)
+  const [suggestedTask, setSuggestedTask] = useState<Task | null>(null)
+
+  const resetTasks = () => {
+    setTasks(EMPTY_STORE)
+    setRankedTasks([])
+    setOverdueTasks([])
+    setSuggestedList([])
+    setSuggestedTask(null)
+    setDueTodayTasks([])
+    setAtRiskTasks([])
+  }
 
   // -----------------------------
-  // Fetch tasks
+  // Fetch tasks: ONE backend call
   // -----------------------------
   const fetchTasks = async () => {
-    const {
-      data: { user: authUser },
-    } = await supabase.auth.getUser()
+    const myRequest = ++requestId.current
+    const myGeneration = sessionGeneration.current
+    taskRequest.current?.abort()
+    const controller = new AbortController()
+    taskRequest.current = controller
+
+    let authUser
+    try {
+      const result = await supabase.auth.getUser()
+      authUser = result.data.user
+    } catch (error) {
+      if (!controller.signal.aborted) console.error('Error checking dashboard user:', error)
+      return
+    }
+
+    if (myGeneration !== sessionGeneration.current || controller.signal.aborted) return
 
     if (!authUser) {
-      setTasks({
-        work: [],
-        personal: [],
-        leisure: [],
-      })
-
-      setSuggestedTask(null)
-
+      if (myGeneration === sessionGeneration.current) resetTasks()
       return
     }
 
-    // ---------------------------------
-    // 1. Fetch actual task data
-    //    from Supabase
-    // ---------------------------------
-    const { data, error } = await supabase
-      .from('tasks')
-      .select('*')
-      .eq('user_id', authUser.id)
-      .neq('status', 'completed')
-      .order('created_at', { ascending: false })
-
-    if (error) {
-      console.error(
-        'Error fetching tasks:',
-        error
-      )
-      return
-    }
-
-    // ---------------------------------
-    // 2. Convert Supabase rows
-    //    into frontend Task objects
-    // ---------------------------------
-    const allMappedTasks: Task[] = []
-
-    data?.forEach((row) => {
-      if (
-        ![
-          'work',
-          'personal',
-          'leisure',
-        ].includes(row.section)
-      ) {
-        return
-      }
-
-      const section = row.section as
-        | 'work'
-        | 'personal'
-        | 'leisure'
-
-      const task: Task = {
-        id: row.id,
-        title: row.title,
-        section,
-
-        brief:
-          row.brief ?? undefined,
-
-        // Keep original ISO timestamp.
-        deadline:
-          row.deadline ?? '',
-
-        priority: 'medium',
-
-        priorityScore:
-          row.priority_score ?? undefined,
-
-        priorityWhy:
-          row.explanation ?? undefined,
-
-        // Keep only numeric value.
-        // Example: "45", not "45 min".
-        estimatedTime:
-          row.estimated_time_minutes != null
-            ? String(
-                row.estimated_time_minutes
-              )
-            : undefined,
-
-        blocked:
-          row.is_blocked ?? false,
-
-        dueToday: row.deadline
-          ? new Date(
-              row.deadline
-            ).toDateString() ===
-            new Date().toDateString()
-          : false,
-
-        atRisk:
-          row.is_blocked === true,
-      }
-
-      allMappedTasks.push(task)
-    })
-
-    // ---------------------------------
-    // 3. Create backend ranking
-    // ---------------------------------
-    let ranked: { id: string }[] = []
+    let d: Row
 
     try {
-      const energyQuery = energy
-        ? `&energy=${encodeURIComponent(energy)}`
+      const backendEnergy = toBackendEnergy(energyRef.current)
+
+      const query = backendEnergy
+        ? `?energy=${encodeURIComponent(backendEnergy)}`
         : ''
 
-      const response = await apiFetch(
-        `/tasks/recommended?limit=100${energyQuery}`
-      )
+      d = await apiFetch(`/tasks/dashboard${query}`, { signal: controller.signal })
 
-      if (Array.isArray(response)) {
-        ranked = response
-      } else {
-        console.warn(
-          'Recommended tasks response is not an array:',
-          response
-        )
-      }
     } catch (error) {
-      console.error(
-        'Error fetching recommended tasks:',
-        error
-      )
+      if (!controller.signal.aborted) console.error('Error fetching dashboard:', error)
+      return
     }
 
-    // ---------------------------------
-    // 4. Build backend rank index
-    // ---------------------------------
-    const rankIndex = new Map<
-      string,
-      number
-    >(
-      ranked.map(
-        (
-          item: { id: string },
-          index: number
-        ) => [item.id, index]
-      )
-    )
+    // A newer request started while this one was running.
+    if (myRequest !== requestId.current || myGeneration !== sessionGeneration.current || controller.signal.aborted) return
 
-    // ---------------------------------
-    // 5. Sort ONLY according to backend
-    // ---------------------------------
-    const sortByBackendRank = (
-      a: Task,
-      b: Task
-    ) =>
-      (rankIndex.get(a.id) ??
-        Number.MAX_SAFE_INTEGER) -
-      (rankIndex.get(b.id) ??
-        Number.MAX_SAFE_INTEGER)
+    const idsOf = (rows?: Row[]) =>
+      new Set<string>((rows ?? []).map((r) => r.id))
 
-    // ---------------------------------
-    // 6. Group tasks while preserving
-    //    backend ranking
-    // ---------------------------------
-    const groupedTasks: TaskStore = {
+    const dueIds = idsOf(d.due_today)
+    const riskIds = idsOf(d.at_risk)
+
+    const toTasks = (rows?: Row[]): Task[] =>
+      (rows ?? [])
+        .map((r) => mapRow(r, dueIds, riskIds))
+        .filter((task): task is Task => task !== null)
+
+    const ranked = toTasks(d.ranked)
+    const overdue = toTasks((d.overdue ?? []).map((row: Row) => ({ ...row, is_overdue: true })))
+    const later = toTasks(d.later)
+    const upcoming = toTasks(d.upcoming)
+    const suggested = toTasks(d.suggested)
+
+    const grouped: TaskStore = {
       work: [],
       personal: [],
       leisure: [],
     }
 
-    allMappedTasks.forEach((task) => {
-      groupedTasks[task.section].push(task)
-    })
+    // Backend order is preserved inside every section.
+    const seen = new Set<string>()
 
-    groupedTasks.work.sort(
-      sortByBackendRank
-    )
+;[...overdue, ...ranked, ...upcoming, ...later].forEach((task) => {
+  if (seen.has(task.id)) return
 
-    groupedTasks.personal.sort(
-      sortByBackendRank
-    )
+  seen.add(task.id)
+  grouped[task.section].push(task)
+})
 
-    groupedTasks.leisure.sort(
-      sortByBackendRank
-    )
-
-    // ---------------------------------
-    // 7. Update task store
-    // ---------------------------------
-    setTasks(groupedTasks)
-
-    // ---------------------------------
-    // 8. First backend-ranked task
-    //    becomes Suggested Focus
-    // ---------------------------------
-    if (ranked.length > 0) {
-      const firstRecommendedTask =
-        allMappedTasks.find(
-          (task) =>
-            task.id === ranked[0].id
-        ) ?? null
-
-      setSuggestedTask(
-        firstRecommendedTask
-      )
-    } else {
-      setSuggestedTask(null)
-    }
+    setTasks(grouped)
+    setRankedTasks(ranked)
+    setOverdueTasks(overdue)
+    setSuggestedList(suggested)
+    setSuggestedTask(suggested[0] ?? null)
+    setDueTodayTasks(toTasks(d.due_today))
+    setAtRiskTasks(toTasks(d.at_risk))
   }
 
   // -----------------------------
@@ -275,12 +285,16 @@ export function AppProvider({ children }: AppProviderProps) {
     >([])
 
   const fetchHistory = async () => {
-    const {
-      data: { user: authUser },
-    } = await supabase.auth.getUser()
+    const myGeneration = sessionGeneration.current
+    historyRequest.current?.abort()
+    const controller = new AbortController()
+    historyRequest.current = controller
+    const { data: { user: authUser } } = await supabase.auth.getUser()
+
+    if (myGeneration !== sessionGeneration.current || controller.signal.aborted) return
 
     if (!authUser) {
-      setHistory([])
+      if (myGeneration === sessionGeneration.current) setHistory([])
       return
     }
 
@@ -291,11 +305,13 @@ export function AppProvider({ children }: AppProviderProps) {
       )
       .eq('user_id', authUser.id)
       .eq('status', 'completed')
+      .abortSignal(controller.signal)
       .order('completed_at', {
         ascending: false,
       })
 
     if (error) {
+      if (controller.signal.aborted || myGeneration !== sessionGeneration.current) return
       console.error(
         'Error fetching history:',
         error
@@ -307,7 +323,7 @@ export function AppProvider({ children }: AppProviderProps) {
       (data ?? []).map((row) => ({
         id: row.id,
         title: row.title,
-        section: row.section,
+        section: row.section ?? null,
         type: 'completed' as const,
         date: row.completed_at
           ? new Date(
@@ -323,7 +339,7 @@ export function AppProvider({ children }: AppProviderProps) {
           : '',
       }))
 
-    setHistory(completedHistory)
+    if (!controller.signal.aborted && myGeneration === sessionGeneration.current) setHistory(completedHistory)
   }
 
   // -----------------------------
@@ -337,12 +353,18 @@ export function AppProvider({ children }: AppProviderProps) {
     })
 
   const loadUser = async () => {
+    const myGeneration = sessionGeneration.current
+    profileRequest.current?.abort()
+    const controller = new AbortController()
+    profileRequest.current = controller
     const {
       data: { user: authUser },
     } = await supabase.auth.getUser()
 
+    if (myGeneration !== sessionGeneration.current || controller.signal.aborted) return
+
     if (!authUser) {
-      setUser({
+      if (myGeneration === sessionGeneration.current) setUser({
         name: '',
         email: '',
         profession: '',
@@ -355,8 +377,10 @@ export function AppProvider({ children }: AppProviderProps) {
         .from('user_profile')
         .select('name, profession')
         .eq('user_id', authUser.id)
+        .abortSignal(controller.signal)
         .single()
 
+    if (controller.signal.aborted || myGeneration !== sessionGeneration.current) return
     setUser({
       name: profile?.name ?? '',
       email: authUser.email ?? '',
@@ -366,10 +390,9 @@ export function AppProvider({ children }: AppProviderProps) {
   }
 
   // -----------------------------
-  // Load tasks / user / history
+  // History / user / auth changes
   // -----------------------------
   useEffect(() => {
-    fetchTasks()
     fetchHistory()
     loadUser()
 
@@ -378,18 +401,17 @@ export function AppProvider({ children }: AppProviderProps) {
     } =
       supabase.auth.onAuthStateChange(
         (_event, session) => {
+          const nextUserId = session?.user.id ?? null
+          if (nextUserId !== activeUserId.current) {
+            cancelAccountLoads()
+            activeUserId.current = nextUserId
+          }
           if (session) {
             fetchTasks()
             fetchHistory()
             loadUser()
           } else {
-            setTasks({
-              work: [],
-              personal: [],
-              leisure: [],
-            })
-
-            setSuggestedTask(null)
+            resetTasks()
 
             setHistory([])
 
@@ -402,17 +424,18 @@ export function AppProvider({ children }: AppProviderProps) {
         }
       )
 
-    return () =>
+    return () => {
       listener.subscription.unsubscribe()
+      cancelAccountLoads()
+    }
   }, [])
 
   // -----------------------------
-  // Re-rank when energy changes
+  // Fetch on mount, and again whenever the energy
+  // chip changes (including when it is cleared).
   // -----------------------------
   useEffect(() => {
-    if (energy !== null) {
-      fetchTasks()
-    }
+    fetchTasks()
   }, [energy])
 
   // -----------------------------
@@ -433,24 +456,9 @@ export function AppProvider({ children }: AppProviderProps) {
 
     if (!task) return
 
-    const completedAt =
-      new Date().toISOString()
-
-    const { error } = await supabase
-      .from('tasks')
-      .update({
-        status: 'completed',
-        completed_at: completedAt,
-      })
-      .eq('id', id)
-
-    if (error) {
-      console.error(
-        'Error completing task:',
-        error
-      )
-      throw error
-    }
+    await apiFetch(`/tasks/${encodeURIComponent(id)}/complete`, {
+      method: 'POST',
+    })
 
     const today =
       new Date().toLocaleDateString(
@@ -473,81 +481,65 @@ export function AppProvider({ children }: AppProviderProps) {
       ...prev,
     ])
 
+    // Instant feedback; the refetch below corrects anything else.
+    const without = (list: Task[]) =>
+      list.filter((item) => item.id !== id)
+
     setTasks((prev) => ({
-      work: prev.work.filter(
-        (task) => task.id !== id
-      ),
-
-      personal: prev.personal.filter(
-        (task) => task.id !== id
-      ),
-
-      leisure: prev.leisure.filter(
-        (task) => task.id !== id
-      ),
+      work: without(prev.work),
+      personal: without(prev.personal),
+      leisure: without(prev.leisure),
     }))
+    setRankedTasks(without)
+    setOverdueTasks(without)
+    setSuggestedList(without)
+    setDueTodayTasks(without)
+    setAtRiskTasks(without)
+    setSuggestedTask((prev) =>
+      prev?.id === id ? null : prev
+    )
 
-    // If completed task was Suggested Focus,
-    // get the next backend recommendation.
+    // Get the next backend recommendation.
     await fetchTasks()
   }
 
   // -----------------------------
   // Add task
+  // NOTE: tasks are now created only through the chat agent.
+  // Remove this once nothing calls it (it bypasses the AI parser).
   // -----------------------------
   const addTask = async (
     task: Task
   ) => {
-    const {
-      data: { user: authUser },
-    } = await supabase.auth.getUser()
-
-    if (!authUser) {
-      throw new Error(
-        'User is not authenticated'
-      )
-    }
-
-    const { error } = await supabase
-      .from('tasks')
-      .insert({
-        user_id: authUser.id,
-
+    const durationEstimate = task.estimatedTime
+      ? Number.parseInt(task.estimatedTime, 10)
+      : null
+    await apiFetch('/tasks', {
+      method: 'POST',
+      body: JSON.stringify({
         title: task.title,
-
         section: task.section,
-
-        brief:
-          task.brief ?? null,
-
-        deadline: null,
-
+        brief: task.brief ?? null,
+        schedule_type: task.scheduleType ?? 'flexible',
+        deadline: task.deadline ?? null,
+        scheduled_start: task.scheduledStart ?? null,
+        scheduled_end: task.scheduledEnd ?? null,
+        has_explicit_time: task.hasExplicitTime ?? false,
+        is_recurring: task.isRecurring ?? false,
+        recurrence: task.recurrence ?? null,
+        recurrence_end: task.recurrenceEnd ?? null,
+        duration: null,
         estimated_time_minutes:
-          null,
-
-        priority_score:
-          null,
-
-        explanation:
-          null,
-
-        status: 'pending',
-
-        is_blocked: false,
-
+          durationEstimate != null && Number.isFinite(durationEstimate)
+            ? durationEstimate
+            : null,
+        is_blocked: task.isBlocked ?? false,
+        effort: task.effort ?? null,
+        urgency: task.urgency ?? null,
         source_type: 'text',
-      })
+      }),
+    })
 
-    if (error) {
-      console.error(
-        'Error creating task:',
-        error
-      )
-      throw error
-    }
-
-    // Re-fetch so backend ranking
-    // decides where the new task belongs.
     await fetchTasks()
   }
 
@@ -560,32 +552,25 @@ export function AppProvider({ children }: AppProviderProps) {
       | 'work'
       | 'personal'
       | 'leisure',
-    updates: Partial<{
-      title: string
-      brief: string | null
-      deadline: string | null
-      estimated_time_minutes:
-        | number
-        | null
-      status: string
-    }>
+    updates: TaskUpdates
   ) => {
-    const { error } = await supabase
-      .from('tasks')
-      .update(updates)
-      .eq('id', id)
-
-    if (error) {
-      console.error(
-        'Error updating task:',
-        error
-      )
-      throw error
-    }
+    await apiFetch(`/tasks/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        ...taskUpdatesToApi(updates),
+        section,
+      }),
+    })
 
     // Re-fetch after update because
-    // deadline / estimated time can
-    // change backend ranking.
+    // deadline / time can change ranking.
+    await fetchTasks()
+  }
+
+  const deleteTask = async (id: string, _section: Task['section']) => {
+    await apiFetch(`/tasks/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    })
     await fetchTasks()
   }
 
@@ -605,29 +590,11 @@ export function AppProvider({ children }: AppProviderProps) {
     : lightTheme
 
   // -----------------------------
-  // Derived task information
+  // Counts come from the backend lists
   // -----------------------------
-  const allTasks = [
-    ...tasks.work,
-    ...tasks.personal,
-    ...tasks.leisure,
-  ]
-
-  const dueTodayCount =
-    allTasks.filter(
-      (task) => task.dueToday
-    ).length
-
-  const atRiskCount =
-    allTasks.filter(
-      (task) => task.atRisk
-    ).length
-
-  // IMPORTANT:
-  // No client-side ranking here.
-  // suggestedTask comes directly
-  // from backend recommendation.
-  // -----------------------------
+  const dueTodayCount = dueTodayTasks.length
+  const atRiskCount = atRiskTasks.length
+  const overdueCount = overdueTasks.length
 
   // -----------------------------
   // Context value
@@ -647,6 +614,8 @@ export function AppProvider({ children }: AppProviderProps) {
 
     updateTask,
 
+    deleteTask,
+
     energy,
 
     setEnergy,
@@ -659,7 +628,19 @@ export function AppProvider({ children }: AppProviderProps) {
 
     atRiskCount,
 
+    overdueCount,
+
     suggestedTask,
+
+    suggestedList,
+
+    rankedTasks,
+
+    overdueTasks,
+
+    dueTodayTasks,
+
+    atRiskTasks,
 
     history,
   }

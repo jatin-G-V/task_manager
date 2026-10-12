@@ -1,14 +1,22 @@
+import time
 import json
-from datetime import datetime
-from typing import Optional, Literal
 import logging
 from datetime import datetime, timedelta
+from typing import Optional, Literal
 
-logger = logging.getLogger(__name__)
 from pydantic import BaseModel, ValidationError
 
 from app.services.groq_client import groq_client
+from app.services.timeutil import (
+    APP_TZ,
+    now_local,
+    normalize_model_dt,
+    parse_model_dt,
+    utc_offset_str,
+)
 
+
+logger = logging.getLogger(__name__)
 
 
 class ParsedTask(BaseModel):
@@ -37,6 +45,11 @@ class ParsedTask(BaseModel):
     effort: Optional[Literal["low", "medium", "high"]] = None
     urgency: Optional[Literal["low", "medium", "high", "urgent"]] = None
 
+    # Only used by the agent for duplicate / part-of detection.
+    # Never stored in the database.
+    related: Optional[dict] = None
+
+
 SYSTEM_PROMPT = """
 You are an AI task parser for a personal task-management application.
 
@@ -44,8 +57,7 @@ Convert the user's input into structured task information.
 
 Use the meaning of the complete input, not isolated keywords.
 
-Current date: {today} ({weekday})
-Current time: {current_time}
+The current date, time and timezone are given in the CURRENT CONTEXT message that follows this prompt.
 
 IMPORTANT ABOUT EXAMPLES: Every date, weekday and time used inside the
 examples below is FICTIONAL. The examples pretend that the current moment
@@ -76,7 +88,7 @@ For a bare topic:
 - is_task = true
 - extract only information genuinely supported by the input
 - provide a title
-- provide a section when the topic clearly indicates one
+  - provide a section; when unclear, use personal
 - do not invent scheduling, deadlines, effort, urgency, duration, or other
   unsupported information
 - schedule_type = null, has_explicit_time = null (there is no time
@@ -103,6 +115,8 @@ personal: errands, shopping, travel, household tasks, personal responsibilities
 leisure: entertainment, hobbies, relaxation, recreation
 
 Use the meaning of the complete input.
+Every task must use one of these sections. When the input gives no reliable
+category, use personal so the task remains visible in the app.
 
 TITLE
 
@@ -180,6 +194,23 @@ Example (pretend today is Wednesday 2031-03-12):
 
 A phrase such as "tomorrow", "this week", or "tonight" is NOT automatically
 a deadline or scheduled time. Its role depends on what the action means.
+
+
+CLOCK TIMES WITHOUT AM/PM
+
+If the user gives a clock time without AM/PM (for example "at 4"):
+- Prefer the AM or PM reading that is still in the future today.
+- If both readings have already passed today, use the one that is more
+  plausible for the activity (daytime activities: the afternoon reading)
+  and keep it on TODAY. Do NOT move it to tomorrow unless the user said
+  tomorrow. The system will tell the user that the time has passed.
+
+TIMEZONE
+
+All dates and times are in the timezone given above. Every datetime you
+return MUST be ISO-8601 with that UTC offset, for example
+2031-03-12T15:00:00+05:30. Never return Z or +00:00 and never return a
+datetime without an offset.
 
 
 --------------------------------------------------
@@ -710,7 +741,7 @@ Use this exact structure:
 
 {{
   "title": "string or null",
-  "section": "work | personal | leisure | null",
+  "section": "work | personal | leisure",
   "is_task": true,
   "brief": "string or null",
   "schedule_type": "flexible | scheduled | null",
@@ -727,14 +758,23 @@ Use this exact structure:
   "urgency": "low | medium | high | urgent | null"
 }}
 
+The "related" field is null unless a list of EXISTING OPEN TASKS is provided
+in a later system message; follow that message's instructions for it.
+
 For non-task input:
 - is_task = false
 - all other fields = null
 """
-def _normalize(d: dict) -> dict:
+
+
+def _normalize(d: dict, now) -> dict:
     """Deterministic enforcement of rules the prompt only asks the model to follow."""
     if d.get("is_task") is False:
         return d
+
+    # every datetime becomes ISO with the local offset (model output is local time)
+    for field in ("deadline", "scheduled_start", "scheduled_end", "recurrence_end"):
+        d[field] = normalize_model_dt(d.get(field))
 
     duration = d.get("duration")
 
@@ -767,6 +807,22 @@ def _normalize(d: dict) -> dict:
             except ValueError:
                 pass
 
+    # A vague window (no exact time) on a FUTURE day must start at a natural
+    # boundary. A start like 20:44 means the model copied the current clock.
+    if (
+        d.get("schedule_type") == "scheduled"
+        and not d.get("has_explicit_time")
+        and d.get("scheduled_start")
+    ):
+        try:
+            start = parse_model_dt(d["scheduled_start"])
+            if start and start.date() > now.date() and (start.minute or start.second):
+                d["scheduled_start"] = start.replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                ).isoformat()
+        except ValueError:
+            pass
+
     # recurrence fields only make sense when recurring
     if not d.get("is_recurring"):
         d["is_recurring"] = False
@@ -774,29 +830,60 @@ def _normalize(d: dict) -> dict:
         d["recurrence_end"] = None
 
     return d
-def parse_task_text(raw_text: str) -> dict:
-    now = datetime.now()
 
-    system_prompt = SYSTEM_PROMPT.format(
-        today=now.strftime("%Y-%m-%d"),
-        weekday=now.strftime("%A"),
-        current_time=now.strftime("%H:%M"),
+
+def _related_message(candidates: list) -> str:
+    lines = "\n".join(
+        f"{c['id']} | {c['title']} | "
+        f"{c.get('scheduled_start') or c.get('deadline') or 'no date'}"
+        for c in candidates
     )
+
+    return f"""EXISTING OPEN TASKS (id | title | when):
+{lines}
+
+Set the field "related" to {{"task_id": "<id>", "relation": "duplicate" | "part_of"}} or null.
+- duplicate: the input is the same task as an existing one (same action, same people/places, same day).
+- part_of: the input is a small item that belongs inside an existing broader task (for example "Buy milk" inside "Buy groceries").
+- A different client, person, place or day means null. If unsure, null.
+- task_id must be copied exactly from the list above."""
+
+
+# `{{ }}` collapse hone ke liye, aur prompt ek hi baar banta hai (cacheable)
+STATIC_PROMPT = SYSTEM_PROMPT.format()
+
+
+def parse_task_text(raw_text: str) -> dict:
+    now = now_local()
+
+    context = (
+        "CURRENT CONTEXT\n"
+        f"Current date: {now:%Y-%m-%d} ({now:%A})\n"
+        f"Current time: {now:%H:%M}\n"
+        f"Timezone: {APP_TZ} (UTC{utc_offset_str()})\n"
+        f"Current local datetime: {now.isoformat(timespec='minutes')}"
+    )
+
+    started = time.perf_counter()
 
     response = groq_client.chat.completions.create(
         model="openai/gpt-oss-120b",
         response_format={"type": "json_object"},
         temperature=0.2,
         messages=[
-            {
-                "role": "system",
-                "content": system_prompt,
-            },
-            {
-                "role": "user",
-                "content": raw_text,
-            },
+            {"role": "system", "content": STATIC_PROMPT},
+            {"role": "system", "content": context},
+            {"role": "user", "content": raw_text},
         ],
+    )
+
+    usage = getattr(response, "usage", None)
+    details = getattr(usage, "prompt_tokens_details", None)
+    logger.info(
+        "PARSE %.2fs prompt_tokens=%s cached_tokens=%s",
+        time.perf_counter() - started,
+        getattr(usage, "prompt_tokens", None),
+        getattr(details, "cached_tokens", None),
     )
 
     raw = response.choices[0].message.content
@@ -804,12 +891,12 @@ def parse_task_text(raw_text: str) -> dict:
     try:
         data = json.loads(raw)
         parsed = ParsedTask(**data)
-
     except (json.JSONDecodeError, ValidationError) as e:
-        # log the raw model output, but do not hand it back to the agent/user
         logger.error("Invalid task JSON: %s | raw=%s", e, raw)
         raise ValueError(
             "I couldn't understand that task clearly. Could you rephrase it?"
         )
 
-    return _normalize(parsed.model_dump())
+    result = _normalize(parsed.model_dump(), now)
+    result.pop("related", None)   # never a database column
+    return result

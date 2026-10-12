@@ -1,334 +1,486 @@
-import React, { useState } from 'react'
-import type { Task } from '../types'
-import DateTimePicker from '@react-native-community/datetimepicker'
-import { Alert, Platform } from 'react-native'
-import { SafeAreaView } from 'react-native-safe-area-context'
-
+import React, { useRef, useState } from "react";
 import {
-  View,
-  Text,
-  ScrollView,
+  Alert,
+  Modal,
   Pressable,
-  TextInput,
+  ScrollView,
   StyleSheet,
-} from 'react-native'
-
-import { useLocalSearchParams, useRouter } from 'expo-router'
-
-import { useApp } from '../context/AppContext'
-
+  Text,
+  TextInput,
+  View,
+} from "react-native";
+import DateTimePicker from "@react-native-community/datetimepicker";
+import { useApp } from "../context/AppContext";
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import {
-  ChevronLeft,
-  Check,
-  AlertTriangle,
   Calendar,
-  Clock,
+  Check,
+  ChevronLeft,
   Pencil,
   Sparkles,
-} from '../components/icons'
-
-const priorityColors: Record<string, string> = {
-  high: '#E9713C',
-  medium: '#F5C842',
-  low: '#3DAF72',
+  X,
+} from "../components/icons";
+import { SafeAreaView } from "react-native-safe-area-context";
+import {
+  parseInstant,
+  recurrenceLabel,
+  timingLabel,
+} from "../utils/taskFormat";
+import type { Effort, Task, Urgency } from "../types";
+type DatePickerMode = "date" | "time" | null;
+type DatePickerTarget =
+  | "scheduled-date"
+  | "scheduled-start"
+  | "scheduled-end"
+  | "deadline-date"
+  | "deadline-time";
+const urgencyOptions: Exclude<Urgency, null>[] = [
+  "low",
+  "medium",
+  "high",
+  "urgent",
+];
+const effortOptions: Exclude<Effort, null>[] = [
+  "low",
+  "medium",
+  "high",
+];
+const weekDays = [
+  { short: "Mon", full: "Monday" },
+  { short: "Tue", full: "Tuesday" },
+  { short: "Wed", full: "Wednesday" },
+  { short: "Thu", full: "Thursday" },
+  { short: "Fri", full: "Friday" },
+  { short: "Sat", full: "Saturday" },
+  { short: "Sun", full: "Sunday" },
+];
+type RecurrenceKind =
+  | "none"
+  | "daily"
+  | "weekly"
+  | "monthly"
+  | "custom";
+type RecurrenceEndMode = "never" | "date";
+const combineLocalDateTime = (
+  date: Date,
+  time?: Date,
+) => {
+  const result = new Date(date);
+  if (time) {
+    result.setHours(
+      time.getHours(),
+      time.getMinutes(),
+      0,
+      0,
+    );
+  } else {
+    result.setHours(12, 0, 0, 0);
+  }
+  return result;
+};
+function recurrenceKind(task: Task): RecurrenceKind {
+  if (!task.isRecurring || !task.recurrence) {
+    return "none";
+  }
+  const value = task.recurrence.toLowerCase();
+  if (value === "daily") return "daily";
+  if (value === "monthly") return "monthly";
+  if (value.startsWith("weekly on ")) return "weekly";
+  return "custom";
 }
-
+function recurrenceDays(task: Task) {
+  if (
+    !task.recurrence
+      ?.toLowerCase()
+      .startsWith("weekly on ")
+  ) {
+    return [];
+  }
+  const value = task.recurrence
+    .replace(/^weekly on /i, "")
+    .replace(" and ", ", ")
+    .split(",")
+    .map((day) => day.trim().toLowerCase());
+  return weekDays
+    .filter((day) =>
+      value.includes(day.full.toLowerCase()),
+    )
+    .map((day) => day.full);
+}
+function weeklyRule(days: string[]) {
+  if (days.length === 1) {
+    return `weekly on ${days[0]}`;
+  }
+  if (days.length === 2) {
+    return `weekly on ${days[0]} and ${days[1]}`;
+  }
+  return `weekly on ${days
+    .slice(0, -1)
+    .join(", ")} and ${days.at(-1)}`;
+}
 export default function TaskDetailScreen() {
-  const { id, section } = useLocalSearchParams<{
-    id: string
-    section: 'work' | 'personal' | 'leisure'
-  }>()
-
-  const router = useRouter()
-
+  const { id, section } = useLocalSearchParams<{ id: string; section: Task['section'] }>();
+  const router = useRouter();
   const {
     tasks,
-    t,
     completeTask,
+    t,
     updateTask,
-  } = useApp()
-
-  const task = tasks[section].find(
-    item => item.id === id
-  )
-
-  const [steps, setSteps] = useState(
-    task?.steps?.map(s => ({
-      text: s,
-      done: false,
-    })) ?? []
-  )
-
-  /*
-   * --------------------------------------------------
-   * DEADLINE STATE
-   * --------------------------------------------------
-   */
-
-  const initialDeadline =
-    task?.deadline &&
-    task.deadline !== 'No deadline set'
-      ? new Date(task.deadline)
-      : null
-
-  const [deadlineDate, setDeadlineDate] =
-    useState<Date | null>(
-      initialDeadline &&
-      !isNaN(initialDeadline.getTime())
-        ? initialDeadline
-        : null
-    )
-
-  const [hasTime, setHasTime] = useState(
-    !!(
-      initialDeadline &&
-      !isNaN(initialDeadline.getTime()) &&
-      (
-        initialDeadline.getHours() !== 0 ||
-        initialDeadline.getMinutes() !== 0
-      )
-    )
-  )
-
-  const [showDatePicker, setShowDatePicker] =
-    useState(false)
-
-  const [showTimePicker, setShowTimePicker] =
-    useState(false)
-
-  const showAlert = (
-  title: string,
-  message: string
-) => {
-  if (Platform.OS === 'web') {
-    window.alert(`${title}: ${message}`)
-  } else {
-    Alert.alert(title, message)
-  }
-}  
-
-  const saveDeadline = async (date: Date) => {
-    if (!task) return
-
-    try {
-      await updateTask(
-        task.id,
-        section,
-        {
-          deadline: date.toISOString(),
-        }
-      )
-    } catch (e) {
-      console.error(
-        'Failed to save deadline:',
-        e
-      )
-    }
-  }
-
- const onDateChange = (event: any, selected?: Date) => {
-  if (Platform.OS !== 'ios') {
-    setShowDatePicker(false)
-  }
-
-  if (event.type === 'dismissed' || !selected) return
-
-  const merged = new Date(selected)
-
-  if (deadlineDate && hasTime) {
-    merged.setHours(deadlineDate.getHours(), deadlineDate.getMinutes(), 0, 0)
-  } else {
-    merged.setHours(23, 59, 0, 0)
-  }
-
-  const now = new Date()
-  if (merged < now) {
-    showAlert('Invalid deadline', "You can't set a deadline in the past.")
-    return
-  }
-
-  setDeadlineDate(merged)
-  saveDeadline(merged)
-}
-
-const onTimeChange = (
-  event: any,
-  selected?: Date
-) => {
-  setShowTimePicker(false)
-
-  if (
-    event.type === 'dismissed' ||
-    !selected ||
-    !deadlineDate
-  ) {
-    return
-  }
-
-  const merged = new Date(
-    deadlineDate
-  )
-
-  merged.setHours(
-    selected.getHours(),
-    selected.getMinutes(),
-    0,
-    0
-  )
-
-  const now = new Date()
-
-  if (merged < now) {
-    showAlert(
-      'Invalid deadline',
-      "You can't set a deadline time in the past."
-    )
-    return
-  }
-
-  setDeadlineDate(merged)
-  setHasTime(true)
-
-  saveDeadline(merged)
-}
-
-  /*
-   * --------------------------------------------------
-   * OTHER STATE
-   * --------------------------------------------------
-   */
-
-  const [title, setTitle] = useState(
-    task?.title ?? ''
-  )
-
+    darkMode,
+  } = useApp();
+  const task = tasks[section]?.find((item) => item.id === id);
   const [editingTitle, setEditingTitle] =
-    useState(false)
-
-  const [brief, setBrief] = useState(
-    task?.brief ?? ''
-  )
-
-  const [editingBrief, setEditingBrief] =
-    useState(false)
-
-  const [estimatedTime, setEstimatedTime] = useState(() => {
-  if (task?.estimatedTime == null) return ''
-
-  return String(task.estimatedTime).replace(/[^0-9]/g, '')
-})
-
-  const [editingTime, setEditingTime] =
-    useState(false)
-
-  const [urgent, setUrgent] =
-    useState(false)
-
-  /*
-   * --------------------------------------------------
-   * TASK NOT FOUND
-   * --------------------------------------------------
-   */
-
+    useState(false);
+  const [title, setTitle] = useState(
+    task?.title ?? "",
+  );
+  const [editingNotes, setEditingNotes] =
+    useState(false);
+  const [notes, setNotes] = useState(
+    task?.brief ?? "",
+  );
+  const [recurrenceEditorOpen, setRecurrenceEditorOpen] =
+    useState(false);
+  const [pickerMode, setPickerMode] =
+    useState<DatePickerMode>(null);
+  const [pickerTarget, setPickerTarget] =
+    useState<DatePickerTarget | null>(null);
+  const [pickerValue, setPickerValue] =
+    useState(new Date());
+  const notesAtEditStart = useRef(
+    task?.brief ?? "",
+  );
   if (!task) {
-    return (
-      <SafeAreaView
-        style={[
-          styles.empty,
-          {
-            backgroundColor: t.bg,
-          },
-        ]}
-        edges={['top']}
-      >
-        <Text
-          style={[
-            styles.emptyText,
-            {
-              color: t.muted,
-            },
-          ]}
-        >
-          Task not found
-        </Text>
-      </SafeAreaView>
-    )
+    return null;
   }
-
-  /*
-   * --------------------------------------------------
-   * WORKFLOW
-   * --------------------------------------------------
-   */
-
-  const toggleStep = (
-    index: number
+  const scheduleStart =
+    parseInstant(task.scheduledStart);
+  const scheduleEnd =
+    parseInstant(task.scheduledEnd);
+  const deadline =
+    parseInstant(task.deadline);
+  const timing = timingLabel(task);
+  const repeat = recurrenceLabel(task);
+  const save = async (
+    updates: Parameters<typeof updateTask>[2],
   ) => {
-    setSteps(prev =>
-      prev.map((step, i) =>
-        i === index
-          ? {
-              ...step,
-              done: !step.done,
-            }
-          : step
-      )
-    )
-  }
-
+    try {
+      await updateTask(task.id, task.section, updates);
+    } catch (error) {
+      console.error('Failed to update task:', error);
+      Alert.alert('Could not save changes', 'Please try again.');
+    }
+  };
+  const rejectPast = (date: Date) => {
+    if (date.getTime() <= Date.now()) {
+      Alert.alert(
+        "Invalid time",
+        "Please choose a date and time in the future.",
+      );
+      return true;
+    }
+    return false;
+  };
   /*
-   * --------------------------------------------------
-   * COMPLETE TASK
-   * --------------------------------------------------
+   * DATE / TIME PICKER
    */
-
+  const openScheduledDatePicker = () => {
+    setPickerValue(
+      scheduleStart ??
+        scheduleEnd ??
+        new Date(),
+    );
+    setPickerTarget("scheduled-date");
+    setPickerMode("date");
+  };
+  const openScheduledStartPicker = () => {
+    setPickerValue(
+      scheduleStart ?? new Date(),
+    );
+    setPickerTarget("scheduled-start");
+    setPickerMode("time");
+  };
+  const openScheduledEndPicker = () => {
+    setPickerValue(
+      scheduleEnd ?? new Date(),
+    );
+    setPickerTarget("scheduled-end");
+    setPickerMode("time");
+  };
+  const openDeadlineDatePicker = () => {
+    setPickerValue(
+      deadline ?? new Date(),
+    );
+    setPickerTarget("deadline-date");
+    setPickerMode("date");
+  };
+  const openDeadlineTimePicker = () => {
+    setPickerValue(
+      deadline ?? new Date(),
+    );
+    setPickerTarget("deadline-time");
+    setPickerMode("time");
+  };
+  const closePicker = () => {
+    setPickerMode(null);
+    setPickerTarget(null);
+  };
+  const confirmPicker = () => {
+    if (!pickerTarget) return closePicker();
+    const target = pickerTarget;
+    const selected = pickerValue;
+    closePicker();
+    switch (target) {
+      case "scheduled-date":
+        handleScheduledDateChange(selected);
+        break;
+      case "scheduled-start":
+        handleScheduledStartChange(selected);
+        break;
+      case "scheduled-end":
+        handleScheduledEndChange(selected);
+        break;
+      case "deadline-date":
+        handleDeadlineDateChange(selected);
+        break;
+      case "deadline-time":
+        handleDeadlineTimeChange(selected);
+        break;
+    }
+  };
+  const handleScheduledDateChange = (
+    date: Date,
+  ) => {
+    if (rejectPast(date)) return;
+    const nextStart = scheduleStart
+      ? combineLocalDateTime(
+          date,
+          scheduleStart,
+        )
+      : combineLocalDateTime(date);
+    const nextEnd = scheduleEnd
+      ? combineLocalDateTime(
+          date,
+          scheduleEnd,
+        )
+      : null;
+    if (
+      nextStart &&
+      nextEnd &&
+      nextEnd <= nextStart
+    ) {
+      Alert.alert(
+        "Invalid time",
+        "End time must be after the start time.",
+      );
+      return;
+    }
+    const updates: Parameters<
+      typeof updateTask
+    >[2] = {
+      deadline: null,
+      scheduleType: "scheduled",
+    };
+    if (scheduleStart) {
+      updates.scheduledStart =
+        nextStart.toISOString();
+    }
+    if (scheduleEnd) {
+      updates.scheduledEnd =
+        nextEnd!.toISOString();
+    }
+    if (!scheduleStart && !scheduleEnd) {
+      updates.scheduledStart =
+        nextStart.toISOString();
+      updates.hasExplicitTime = false;
+    }
+    save(updates);
+  };
+  const handleScheduledStartChange = (
+    time: Date,
+  ) => {
+    if (!scheduleStart && !scheduleEnd) {
+      Alert.alert(
+        "Set date first",
+        "Set the date before adding a start time.",
+      );
+      return;
+    }
+    const baseDate =
+      scheduleStart ??
+      scheduleEnd ??
+      new Date();
+    const nextStart =
+      combineLocalDateTime(
+        baseDate,
+        time,
+      );
+    const end = scheduleEnd;
+    if (end && end <= nextStart) {
+      Alert.alert(
+        "Invalid time",
+        "Start time must be before the end time.",
+      );
+      return;
+    }
+    save({
+      deadline: null,
+      scheduleType: "scheduled",
+      scheduledStart:
+        nextStart.toISOString(),
+      hasExplicitTime: true,
+    });
+  };
+  const handleScheduledEndChange = (
+    time: Date,
+  ) => {
+    if (!scheduleStart && !scheduleEnd) {
+      Alert.alert(
+        "Set date first",
+        "Set the date before adding an end time.",
+      );
+      return;
+    }
+    const baseDate =
+      scheduleStart ??
+      scheduleEnd ??
+      new Date();
+    const nextEnd =
+      combineLocalDateTime(
+        baseDate,
+        time,
+      );
+    if (
+      scheduleStart &&
+      nextEnd <= scheduleStart
+    ) {
+      Alert.alert(
+        "Invalid time",
+        "End time must be after the start time.",
+      );
+      return;
+    }
+    save({
+      deadline: null,
+      scheduleType: "scheduled",
+      scheduledEnd:
+        nextEnd.toISOString(),
+      hasExplicitTime: true,
+    });
+  };
+  const handleDeadlineDateChange = (
+    date: Date,
+  ) => {
+    const nextDeadline =
+      combineLocalDateTime(
+        date,
+        task.hasExplicitTime
+          ? deadline ?? undefined
+          : undefined,
+      );
+    if (rejectPast(nextDeadline)) return;
+    save({
+      scheduleType: "flexible",
+      deadline:
+        nextDeadline.toISOString(),
+      scheduledStart: null,
+      scheduledEnd: null,
+      hasExplicitTime:
+        Boolean(
+          task.hasExplicitTime &&
+            deadline,
+        ),
+    });
+  };
+  const handleDeadlineTimeChange = (
+    time: Date,
+  ) => {
+    if (!deadline) {
+      Alert.alert(
+        "Set date first",
+        "Set the date before adding a time.",
+      );
+      return;
+    }
+    const nextDeadline =
+      combineLocalDateTime(
+        deadline,
+        time,
+      );
+    if (rejectPast(nextDeadline)) return;
+    save({
+      scheduleType: "flexible",
+      deadline:
+        nextDeadline.toISOString(),
+      scheduledStart: null,
+      scheduledEnd: null,
+      hasExplicitTime: true,
+    });
+  };
+  const askAI = () => {
+  router.push({
+    pathname: "/ChatScreen",
+    params: {
+      prefill: `About "${task.title}" (${timing.text}): `,
+    },
+  });
+};
   const handleComplete = async () => {
-  try {
-    await completeTask(task.id)
-    router.back()
-  } catch (e) {
-    console.error(
-      'Failed to complete task:',
-      e
-    )
-  }
-}
-
-  /*
-   * --------------------------------------------------
-   * SECTION NAME
-   * --------------------------------------------------
-   */
-
-  const sectionName =
-    section === 'work'
-      ? 'Work'
-      : section === 'personal'
-        ? 'Personal'
-        : 'Leisure'
-
+    try {
+      await completeTask(task.id);
+      router.replace('/');
+    } catch (error) {
+      console.error('Failed to complete task:', error);
+      Alert.alert('Could not complete task', 'Please try again.');
+    }
+  };
+  const formatDate = (
+    value: Date | null,
+  ) => {
+    if (!value) return "Select date";
+    return value.toLocaleDateString(
+      "en-US",
+      {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+      },
+    );
+  };
+  const formatTime = (
+    value: Date | null,
+  ) => {
+    if (!value) return "Set time";
+    return value.toLocaleTimeString(
+      "en-US",
+      {
+        hour: "numeric",
+        minute: "2-digit",
+      },
+    );
+  };
   return (
-    <SafeAreaView
+    <SafeAreaView edges = {['top']}
       style={[
         styles.container,
         {
           backgroundColor: t.bg,
         },
       ]}
-      edges={['top']}
     >
-      {/* Header */}
-
+      {/* HEADER */}
       <View style={styles.header}>
         <Pressable
           onPress={() => router.back()}
-          style={styles.backButton}
+          style={({ pressed }) => [
+            styles.backButton,
+            pressed && styles.pressed,
+          ]}
         >
           <ChevronLeft
             size={18}
             color={t.muted}
           />
-
           <Text
             style={[
               styles.backText,
@@ -337,1100 +489,1721 @@ const onTimeChange = (
               },
             ]}
           >
-            {sectionName}
+            {task.section}
           </Text>
         </Pressable>
-
-        <View style={styles.titleRow}>
-          <View
-            style={styles.titleContainer}
-          >
-            {/* Priority + Risk */}
-
-            <View
-              style={styles.badgesRow}
-            >
-              <View
-                style={[
-                  styles.priorityBadge,
-                  {
-                    backgroundColor:
-                      `${priorityColors[task.priority]}20`,
-                  },
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.priorityText,
-                    {
-                      color:
-                        priorityColors[
-                          task.priority
-                        ],
-                    },
-                  ]}
-                >
-                  {task.priority}
-                </Text>
-              </View>
-
-              {task.atRisk && (
-                <View
-                  style={[
-                    styles.riskBadge,
-                    {
-                      backgroundColor:
-                        t.riskBg,
-                    },
-                  ]}
-                >
-                  <AlertTriangle
-                    size={11}
-                    color={t.risk}
-                  />
-
-                  <Text
-                    style={[
-                      styles.riskText,
-                      {
-                        color: t.risk,
-                      },
-                    ]}
-                  >
-                    At Risk
-                  </Text>
-                </View>
-              )}
-            </View>
-
-            {/* Task title */}
-
-            {editingTitle ? (
-              <TextInput
-                autoFocus
-                value={title}
-                onChangeText={setTitle}
-                onBlur={async () => {
-                  setEditingTitle(false)
-
-                  if (!title.trim()) {
-                    setTitle(task.title)
-                    return
-                  }
-
-                  try {
-                    await updateTask(
-                      task.id,
-                      section,
-                      {
-                        title:
-                          title.trim(),
-                      }
-                    )
-                  } catch (e) {
-                    console.error(
-                      'Failed to save title:',
-                      e
-                    )
-                  }
-                }}
-                style={[
-                  styles.title,
-                  {
-                    color: t.text,
-                    borderBottomWidth: 1,
-                    borderColor:
-                      t.primary,
-                  },
-                ]}
-              />
-            ) : (
-              <Pressable
-                onPress={() =>
-                  setEditingTitle(true)
+        {editingTitle ? (
+          <View style={styles.titleEditRow}>
+            <TextInput
+              autoFocus
+              value={title}
+              onChangeText={setTitle}
+              onBlur={() => {
+                const nextTitle =
+                  title.trim();
+                if (
+                  nextTitle &&
+                  nextTitle !== task.title
+                ) {
+                  save({
+                    title: nextTitle,
+                  });
                 }
-                style={{
-                  flexDirection:
-                    'row',
-                  alignItems:
-                    'center',
-                  gap: 8,
-                }}
-              >
-                <Text
-                  style={[
-                    styles.title,
-                    {
-                      color: t.text,
-                    },
-                  ]}
-                >
-                  {title}
-                </Text>
-
-                <Pencil
-                  size={14}
-                  color={t.muted}
-                />
-              </Pressable>
-            )}
+                setEditingTitle(false);
+              }}
+              style={[
+                styles.titleInput,
+                {
+                  backgroundColor:
+                    t.surface,
+                  borderColor:
+                    t.primary,
+                  color: t.text,
+                },
+              ]}
+            />
           </View>
-        </View>
+        ) : (
+          <Pressable
+            onPress={() => {
+              setTitle(task.title);
+              setEditingTitle(true);
+            }}
+            style={styles.titleButton}
+          >
+            <Text
+              style={[
+                styles.title,
+                {
+                  color: t.text,
+                  fontFamily:
+                    "DMSerifDisplay",
+                },
+              ]}
+            >
+              {task.title}
+            </Text>
+            <Pencil
+              size={13}
+              color={t.muted}
+            />
+          </Pressable>
+        )}
       </View>
-
-      {/* Body */}
-
+      {/* CONTENT */}
       <ScrollView
-        style={styles.body}
+        style={styles.scroll}
         contentContainerStyle={
-          styles.bodyContent
+          styles.scrollContent
         }
-        showsVerticalScrollIndicator={
-          false
-        }
+        showsVerticalScrollIndicator={false}
       >
-        {/* Brief */}
-
-        {section === 'work' && (
+        {/* TIMING */}
+        <InfoCard>
+          <View style={styles.cardHeader}>
+            <Calendar
+              size={14}
+              color={t.muted}
+            />
+            <Text
+              style={[
+                styles.cardTitle,
+                {
+                  color: t.text,
+                },
+              ]}
+            >
+              {task.scheduleType ===
+              "scheduled"
+                ? "When"
+                : "Do before"}
+            </Text>
+          </View>
           <View
             style={[
-              styles.brief,
+              styles.timingSummary,
               {
                 backgroundColor:
-                  t.surface,
-                borderColor:
-                  t.border,
+                  timing.tone === "overdue"
+                    ? t.riskBg
+                    : t.surface2,
               },
             ]}
           >
-            {editingBrief ? (
-              <TextInput
-                autoFocus
-                value={brief}
-                onChangeText={
-                  setBrief
-                }
-                multiline
-                onBlur={async () => {
-                  setEditingBrief(
-                    false
-                  )
-
-                  try {
-                    await updateTask(
-                      task.id,
-                      section,
-                      {
-                        brief:
-                          brief.trim() ||
-                          null,
-                      }
-                    )
-                  } catch (e) {
-                    console.error(
-                      'Failed to save brief:',
-                      e
-                    )
+            <Text
+              style={[
+                styles.timingSummaryText,
+                {
+                  color:
+                    timing.tone ===
+                    "overdue"
+                      ? t.risk
+                      : t.text,
+                },
+              ]}
+            >
+              {timing.text}
+            </Text>
+          </View>
+          {task.scheduleType ===
+          "scheduled" ? (
+            <>
+              <EditRow label="Date">
+                <Pressable
+                  onPress={
+                    openScheduledDatePicker
                   }
-                }}
+                >
+                  <Text
+                    style={[
+                      styles.valueText,
+                      {
+                        color: t.text,
+                      },
+                    ]}
+                  >
+                    {formatDate(
+                      scheduleStart ??
+                        scheduleEnd,
+                    )}
+                  </Text>
+                </Pressable>
+              </EditRow>
+              <EditRow label="Start time">
+                <Pressable
+                  onPress={
+                    openScheduledStartPicker
+                  }
+                >
+                  <Text
+                    style={[
+                      styles.valueText,
+                      {
+                        color:
+                          task.hasExplicitTime
+                            ? t.text
+                            : t.muted,
+                      },
+                    ]}
+                  >
+                    {task.hasExplicitTime
+                      ? formatTime(
+                          scheduleStart,
+                        )
+                      : "Set time"}
+                  </Text>
+                </Pressable>
+              </EditRow>
+              <EditRow label="End time">
+                <View
+                  style={
+                    styles.valueRow
+                  }
+                >
+                  <Pressable
+                    onPress={
+                      openScheduledEndPicker
+                    }
+                  >
+                    <Text
+                      style={[
+                        styles.valueText,
+                        {
+                          color:
+                            scheduleEnd
+                              ? t.text
+                              : t.muted,
+                        },
+                      ]}
+                    >
+                      {formatTime(
+                        scheduleEnd,
+                      )}
+                    </Text>
+                  </Pressable>
+                  {task.scheduledEnd && (
+                    <Pressable
+                      onPress={() =>
+                        save({
+                          scheduledEnd:
+                            null,
+                        })
+                      }
+                    >
+                      <Text
+                        style={[
+                          styles.clearText,
+                          {
+                            color: t.risk,
+                          },
+                        ]}
+                      >
+                        Clear
+                      </Text>
+                    </Pressable>
+                  )}
+                </View>
+              </EditRow>
+            </>
+          ) : (
+            <>
+              <EditRow label="Date">
+                <View
+                  style={
+                    styles.valueRow
+                  }
+                >
+                  <Pressable
+                    onPress={
+                      openDeadlineDatePicker
+                    }
+                  >
+                    <Text
+                      style={[
+                        styles.valueText,
+                        {
+                          color:
+                            deadline
+                              ? t.text
+                              : t.muted,
+                        },
+                      ]}
+                    >
+                      {formatDate(
+                        deadline,
+                      )}
+                    </Text>
+                  </Pressable>
+                  {task.deadline && (
+                    <Pressable
+                      onPress={() =>
+                        save({
+                          deadline: null,
+                          hasExplicitTime:
+                            false,
+                        })
+                      }
+                    >
+                      <Text
+                        style={[
+                          styles.clearText,
+                          {
+                            color: t.risk,
+                          },
+                        ]}
+                      >
+                        Clear
+                      </Text>
+                    </Pressable>
+                  )}
+                </View>
+              </EditRow>
+              <EditRow label="Time">
+                <View
+                  style={
+                    styles.valueRow
+                  }
+                >
+                  <Pressable
+                    onPress={
+                      openDeadlineTimePicker
+                    }
+                  >
+                    <Text
+                      style={[
+                        styles.valueText,
+                        {
+                          color:
+                            task.hasExplicitTime
+                              ? t.text
+                              : t.muted,
+                        },
+                      ]}
+                    >
+                      {task.hasExplicitTime
+                        ? formatTime(
+                            deadline,
+                          )
+                        : "Set time"}
+                    </Text>
+                  </Pressable>
+                  {task.hasExplicitTime && (
+                    <Pressable
+                      onPress={() => {
+                        if (!deadline)
+                          return;
+                        const next =
+                          combineLocalDateTime(
+                            deadline,
+                          );
+                        if (
+                          rejectPast(next)
+                        )
+                          return;
+                        save({
+                          deadline:
+                            next.toISOString(),
+                          hasExplicitTime:
+                            false,
+                        });
+                      }}
+                    >
+                      <Text
+                        style={[
+                          styles.clearText,
+                          {
+                            color: t.risk,
+                          },
+                        ]}
+                      >
+                        Clear
+                      </Text>
+                    </Pressable>
+                  )}
+                </View>
+              </EditRow>
+            </>
+          )}
+        </InfoCard>
+        {/* URGENCY / EFFORT */}
+        <InfoCard>
+          <SegmentedRow
+            label="Urgency"
+            options={urgencyOptions}
+            selected={
+              task.urgency ?? null
+            }
+            onSelect={(value) =>
+              save({
+                urgency:
+                  task.urgency === value
+                    ? null
+                    : value,
+              })
+            }
+          />
+          <View style={{ height: 14 }} />
+          <SegmentedRow
+            label="Effort"
+            options={effortOptions}
+            selected={
+              task.effort ?? null
+            }
+            onSelect={(value) =>
+              save({
+                effort:
+                  task.effort === value
+                    ? null
+                    : value,
+              })
+            }
+          />
+        </InfoCard>
+        {/* RECURRENCE */}
+        {task.isRecurring && (
+          <InfoCard>
+          <View
+            style={styles.recurrenceHeader}
+          >
+            <Text
+              style={[
+                styles.smallLabel,
+                {
+                  color: t.muted,
+                },
+              ]}
+            >
+              REPEATS
+            </Text>
+            <Pressable
+              onPress={() =>
+                setRecurrenceEditorOpen(
+                  true,
+                )
+              }
+              style={[
+                styles.editButton,
+                {
+                  backgroundColor:
+                    t.surface2,
+                },
+              ]}
+            >
+              <Pencil
+                size={10}
+                color={t.primary}
+              />
+              <Text
                 style={[
-                  styles.briefText,
+                  styles.editButtonText,
+                  {
+                    color: t.primary,
+                  },
+                ]}
+              >
+                Edit
+              </Text>
+            </Pressable>
+          </View>
+          <Pressable
+            onPress={() =>
+              setRecurrenceEditorOpen(true)
+            }
+          >
+            <View style={styles.repeatRow}>
+              <Text
+                style={[
+                  styles.repeatText,
+                  {
+                    color: repeat
+                      ? t.text
+                      : t.muted,
+                  },
+                ]}
+              >
+                {repeat ??
+                  "Does not repeat"}
+              </Text>
+              {task.recurrenceEnd &&
+                parseInstant(
+                  task.recurrenceEnd,
+                ) && (
+                  <Text
+                    style={[
+                      styles.repeatEnd,
+                      {
+                        color: t.muted,
+                      },
+                    ]}
+                  >
+                    until{" "}
+                    {parseInstant(
+                      task.recurrenceEnd,
+                    )!.toLocaleDateString(
+                      "en-US",
+                      {
+                        month: "short",
+                        day: "numeric",
+                      },
+                    )}
+                  </Text>
+                )}
+            </View>
+          </Pressable>
+        </InfoCard>
+              )}
+        {/* NOTES */}
+
+          <InfoCard>
+            <View
+              style={styles.notesHeader}
+            >
+              <Text
+                style={[
+                  styles.cardTitle,
                   {
                     color: t.text,
                   },
                 ]}
-              />
-            ) : (
-              <Pressable
-                onPress={() =>
-                  setEditingBrief(
-                    true
-                  )
-                }
-                style={{
-                  flexDirection:
-                    'row',
-                  alignItems:
-                    'flex-start',
-                  gap: 8,
-                }}
               >
-                <Text
-                  style={[
-                    styles.briefText,
-                    {
-                      color:
-                        t.muted,
-                      flex: 1,
-                    },
-                  ]}
-                >
-                  {brief ||
-                    'Add a brief...'}
-                </Text>
-
+                Notes
+              </Text>
+              {!editingNotes && (
                 <Pencil
                   size={12}
                   color={t.muted}
                 />
-              </Pressable>
-            )}
-          </View>
-        )}
-
-        {/* Deadline */}
-
-        <View
-          style={[
-            styles.infoCard,
-            {
-              backgroundColor:
-                t.surface,
-              borderColor:
-                t.border,
-            },
-          ]}
-        >
-          <View
-            style={
-              styles.infoHeader
-            }
-          >
-            <Calendar
-              size={13}
-              color={t.muted}
-            />
-
-            <Text
-              style={[
-                styles.infoLabel,
-                {
-                  color: t.muted,
-                },
-              ]}
-            >
-              Deadline
-            </Text>
-          </View>
-
-          <Pressable
-            onPress={() =>
-              setShowDatePicker(true)
-            }
-            style={
-              styles.editValue
-            }
-          >
-            <Text
-              style={[
-                styles.valueText,
-                {
-                  color:
-                    deadlineDate
-                      ? t.text
-                      : t.muted,
-                },
-              ]}
-            >
-              {deadlineDate
-                ? deadlineDate.toLocaleDateString()
-                : 'Set date'}
-            </Text>
-
-            <Pencil
-              size={12}
-              color={t.muted}
-            />
-          </Pressable>
-
-          {deadlineDate && (
-            <Pressable
-              onPress={() =>
-                setShowTimePicker(
-                  true
-                )
-              }
-            >
-              <Text
-                style={{
-                  fontSize: 11,
-                  color: t.primary,
-                  marginTop: 4,
+              )}
+            </View>
+            {editingNotes ? (
+              <TextInput
+                autoFocus
+                value={notes}
+                onChangeText={setNotes}
+                multiline
+                textAlignVertical="top"
+                onBlur={() => {
+                  if (
+                    notes !==
+                    notesAtEditStart.current
+                  ) {
+                    save({
+                      brief: notes,
+                    });
+                  }
+                  setEditingNotes(false);
+                }}
+                style={[
+                  styles.notesInput,
+                  {
+                    backgroundColor:
+                      t.surface2,
+                    color: t.text,
+                    borderColor:
+                      t.border,
+                  },
+                ]}
+              />
+            ) : (
+              <Pressable
+                onPress={() => {
+                  notesAtEditStart.current =
+                    task.brief ?? "";
+                  setNotes(
+                    task.brief ?? "",
+                  );
+                  setEditingNotes(true);
                 }}
               >
-                {hasTime
-                  ? `Time: ${deadlineDate.toLocaleTimeString(
-                      [],
-                      {
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      }
-                    )} · Change`
-                  : '+ Add time (optional)'}
-              </Text>
-            </Pressable>
-          )}
-        </View>
-
-        {/* Date Picker */}
-
-        {showDatePicker && (
-  <View style={{ backgroundColor: t.surface, borderRadius: 12, marginTop: 8 }}>
-    {Platform.OS === 'ios' && (
-      <View style={{ flexDirection: 'row', justifyContent: 'flex-end', padding: 8 }}>
-        <Pressable onPress={() => setShowDatePicker(false)}>
-          <Text style={{ color: t.primary, fontWeight: '600', fontSize: 15 }}>Done</Text>
-        </Pressable>
-      </View>
-    )}
-
-    <DateTimePicker
-      value={deadlineDate ?? new Date()}
-      mode="date"
-      display={Platform.OS === 'ios' ? 'inline' : 'default'}
-      themeVariant="light"
-      onChange={onDateChange}
-    />
-  </View>
-)}
-
-        {/* Time Picker */}
-
-        {showTimePicker &&
-          deadlineDate && (
-            <DateTimePicker
-              value={
-                deadlineDate
-              }
-              mode="time"
-              display={
-                Platform.OS === 'ios'
-                  ? 'spinner'
-                  : 'default'
-              }
-              themeVariant="light"
-              onChange={
-                onTimeChange
-              }
-            />
-          )}
-
-        {/* Estimated Time */}
-
-        <View
-          style={[
-            styles.infoCard,
-            {
-              backgroundColor:
-                t.surface,
-              borderColor:
-                t.border,
-              marginTop: 12,
-            },
-          ]}
-        >
-          <View
-            style={
-              styles.infoHeader
-            }
-          >
-            <Clock
-              size={13}
-              color={t.muted}
-            />
-
-            <Text
-              style={[
-                styles.infoLabel,
-                {
-                  color: t.muted,
-                },
-              ]}
-            >
-              Estimated Time
-            </Text>
-          </View>
-
-          {editingTime ? (
-            <TextInput
-              autoFocus
-              value={
-                estimatedTime
-              }
-              onChangeText={val =>
-                setEstimatedTime(
-                  val.replace(
-                    /[^0-9]/g,
-                    ''
-                  )
-                )
-              }
-              keyboardType="numeric"
-              onBlur={async () => {
-                setEditingTime(
-                  false
-                )
-
-                const minutes =
-                  parseInt(
-                    estimatedTime,
-                    10
-                  )
-
-                if (
-                  isNaN(minutes) ||
-                  minutes <= 0
-                ) {
-                  console.warn(
-                    'Invalid time entered, not saving'
-                  )
-                  return
-                }
-
-                try {
-                  await updateTask(
-                    task.id,
-                    section,
-                    {
-                      estimated_time_minutes:
-                        minutes,
-                    }
-                  )
-                } catch (e) {
-                  console.error(
-                    'Failed to save estimated time:',
-                    e
-                  )
-                }
-              }}
-              placeholder="e.g. 120"
-              placeholderTextColor={
-                t.muted
-              }
-              style={[
-                styles.editInput,
-                {
-                  backgroundColor:
-                    t.surface2,
-                  color: t.text,
-                  borderColor:
-                    t.primary,
-                },
-              ]}
-            />
-          ) : (
-            <Pressable
-              onPress={() =>
-                setEditingTime(
-                  true
-                )
-              }
-              style={
-                styles.editValue
-              }
-            >
-              <Text
-                style={[
-                  styles.valueText,
-                  {
-                    color:
-                      estimatedTime
-                        ? t.text
-                        : t.muted,
-                  },
-                ]}
-              >
-                {estimatedTime
-                  ? `${estimatedTime} min`
-                  : 'Set estimated time'}
-              </Text>
-
-              <Pencil
-                size={12}
-                color={t.muted}
-              />
-            </Pressable>
-          )}
-        </View>
-
-        {/* AI Priority Score */}
-
-        {section === 'work' &&
-          task.priorityScore && (
-            <View
-              style={[
-                styles.priorityCard,
-                {
-                  backgroundColor:
-                    `${t.primary}15`,
-                  borderColor:
-                    `${t.primary}25`,
-                },
-              ]}
-            >
-              <View
-                style={
-                  styles.priorityHeader
-                }
-              >
-                <View
-                  style={
-                    styles.priorityHeading
-                  }
-                >
-                  <Sparkles
-                    size={14}
-                    color={
-                      t.primary
-                    }
-                  />
-
-                  <Text
-                    style={[
-                      styles.priorityLabel,
-                      {
-                        color:
-                          t.primary,
-                      },
-                    ]}
-                  >
-                    AI Priority Score
-                  </Text>
-                </View>
-
-                <View
-                  style={[
-                    styles.scoreBadge,
-                    {
-                      backgroundColor:
-                        t.primary,
-                    },
-                  ]}
-                >
-                  <Text
-                    style={
-                      styles.score
-                    }
-                  >
-                    {
-                      task.priorityScore
-                    }
-                  </Text>
-
-                  <Text
-                    style={
-                      styles.scoreTotal
-                    }
-                  >
-                    /100
-                  </Text>
-                </View>
-              </View>
-
-              {task.priorityWhy && (
                 <Text
                   style={[
-                    styles.priorityWhy,
+                    styles.notesText,
                     {
-                      color:
-                        t.muted,
+                      color: task.brief
+                        ? t.text
+                        : t.muted,
                     },
                   ]}
                 >
-                  {
-                    task.priorityWhy
-                  }
+                  {task.brief ||
+                    "Add notes"}
                 </Text>
-              )}
-            </View>
-          )}
+              </Pressable>
+            )}
+          </InfoCard>
 
-        {/* Workflow */}
-
-        {section === 'work' &&
-          steps.length > 0 && (
-            <View
-              style={
-                styles.workflow
-              }
-            >
-              <Text
-                style={[
-                  styles.workflowLabel,
-                  {
-                    color:
-                      t.muted,
-                  },
-                ]}
-              >
-                Workflow
-              </Text>
-
-              {steps.map(
-                (
-                  step,
-                  index
-                ) => (
-                  <Pressable
-                    key={index}
-                    onPress={() =>
-                      toggleStep(
-                        index
-                      )
-                    }
-                    style={[
-                      styles.step,
-                      {
-                        backgroundColor:
-                          t.surface,
-                        borderColor:
-                          step.done
-                            ? `${t.success}40`
-                            : t.border,
-                      },
-                    ]}
-                  >
-                    <View
-                      style={[
-                        styles.checkbox,
-                        {
-                          backgroundColor:
-                            step.done
-                              ? t.success
-                              : t.surface2,
-                          borderColor:
-                            step.done
-                              ? 'transparent'
-                              : t.border,
-                        },
-                      ]}
-                    >
-                      {step.done && (
-                        <Check
-                          size={11}
-                          color="#FFFFFF"
-                        />
-                      )}
-                    </View>
-
-                    <Text
-                      style={[
-                        styles.stepText,
-                        {
-                          color:
-                            step.done
-                              ? t.muted
-                              : t.text,
-                          textDecorationLine:
-                            step.done
-                              ? 'line-through'
-                              : 'none',
-                        },
-                      ]}
-                    >
-                      {step.text}
-                    </Text>
-                  </Pressable>
-                )
-              )}
-            </View>
-          )}
       </ScrollView>
-
-      {/* Bottom Actions */}
-
+      {/* COMPLETE */}
       <View
         style={[
-          styles.actions,
+          styles.footer,
           {
-            borderTopColor:
-              t.border,
+            borderTopColor: t.border,
             backgroundColor:
               t.surface,
           },
         ]}
       >
-        {/* Mark Urgent */}
-
-        {section === 'work' && (
-          <Pressable
-            onPress={() =>
-              setUrgent(
-                value => !value
-              )
-            }
+        <Pressable
+          onPress={askAI}
+          style={[
+            styles.askAIButton,
+            {
+              backgroundColor: t.surface2,
+              borderColor: t.border,
+            },
+          ]}
+        >
+          <Sparkles
+            size={16}
+            color={t.primary}
+          />
+          <Text
             style={[
-              styles.urgentButton,
+              styles.askAIText,
               {
-                backgroundColor:
-                  urgent
-                    ? t.riskBg
-                    : t.surface2,
-                borderColor:
-                  urgent
-                    ? t.risk
-                    : t.border,
+                color: t.primary,
               },
             ]}
           >
-            <AlertTriangle
-              size={16}
-              color={
-                urgent
-                  ? t.risk
-                  : t.muted
-              }
-            />
-
-            <Text
-              style={[
-                styles.urgentText,
-                {
-                  color:
-                    urgent
-                      ? t.risk
-                      : t.muted,
-                },
-              ]}
-            >
-              {urgent
-                ? 'Marked urgent today ✓'
-                : 'Mark urgent today'}
-            </Text>
-          </Pressable>
-        )}
-
-        {/* Mark Complete */}
-
+            Ask AI about this task
+          </Text>
+        </Pressable>
         <Pressable
-          onPress={
-            handleComplete
-          }
-          style={[
+          onPress={handleComplete}
+          style={({ pressed }) => [
             styles.completeButton,
             {
-              backgroundColor:
-                t.success,
+              backgroundColor: t.success,
             },
+            pressed &&
+              styles.completePressed,
           ]}
         >
           <Check
             size={18}
             color="#FFFFFF"
           />
-
           <Text
-            style={
-              styles.completeText
-            }
+            style={styles.completeText}
           >
             Mark Complete
           </Text>
         </Pressable>
       </View>
+      {/* DATE / TIME PICKER */}
+      <Modal
+        visible={Boolean(pickerMode)}
+        transparent
+        animationType="fade"
+        onRequestClose={closePicker}
+      >
+        <View style={styles.pickerOverlay}>
+          <View
+            style={[
+              styles.pickerSheet,
+              {
+                backgroundColor: t.surface,
+                borderColor: t.border,
+              },
+            ]}
+          >
+            <Text style={[styles.pickerTitle, { color: t.text }]}>
+              {pickerMode === "date" ? "Choose a date" : "Choose a time"}
+            </Text>
+            {pickerMode && (
+              <DateTimePicker
+                value={pickerValue}
+                mode={pickerMode}
+                display="spinner"
+                themeVariant={darkMode ? "dark" : "light"}
+                textColor={t.text}
+                onValueChange={(_, selectedDate) => {
+                  if (selectedDate) setPickerValue(selectedDate);
+                }}
+                onDismiss={closePicker}
+              />
+            )}
+            <View style={styles.pickerActions}>
+              <Pressable
+                onPress={closePicker}
+                style={[styles.pickerAction, { borderColor: t.border }]}
+              >
+                <Text style={[styles.pickerCancelText, { color: t.muted }]}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={confirmPicker}
+                style={[styles.pickerAction, { backgroundColor: t.primary, borderColor: t.primary }]}
+              >
+                <Text style={styles.pickerConfirmText}>Done</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+      {/* RECURRENCE EDITOR */}
+      <RecurrenceEditor
+        visible={recurrenceEditorOpen}
+        task={task}
+        onClose={() =>
+          setRecurrenceEditorOpen(false)
+        }
+        onSave={(updates) => {
+          save(updates);
+          setRecurrenceEditorOpen(false);
+        }}
+      />
     </SafeAreaView>
-  )
+  );
 }
-
+/* -------------------------------------------------------------------------- */
+/* INFO CARD                                                                  */
+/* -------------------------------------------------------------------------- */
+function InfoCard({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  const { t } = useApp();
+  return (
+    <View
+      style={[
+        styles.infoCard,
+        {
+          backgroundColor: t.surface,
+          borderColor: t.border,
+        },
+      ]}
+    >
+      {children}
+    </View>
+  );
+}
+/* -------------------------------------------------------------------------- */
+/* EDIT ROW                                                                   */
+/* -------------------------------------------------------------------------- */
+function EditRow({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  const { t } = useApp();
+  return (
+    <View
+      style={[
+        styles.editRow,
+        {
+          backgroundColor: t.surface2,
+        },
+      ]}
+    >
+      <Text
+        style={[
+          styles.editLabel,
+          {
+            color: t.muted,
+          },
+        ]}
+      >
+        {label}
+      </Text>
+      {children}
+    </View>
+  );
+}
+/* -------------------------------------------------------------------------- */
+/* SEGMENTED ROW                                                              */
+/* -------------------------------------------------------------------------- */
+function SegmentedRow<T extends string>({
+  label,
+  options,
+  selected,
+  onSelect,
+}: {
+  label: string;
+  options: readonly T[];
+  selected: T | null;
+  onSelect: (value: T) => void;
+}) {
+  const { t } = useApp();
+  return (
+    <View>
+      <Text
+        style={[
+          styles.smallLabel,
+          {
+            color: t.muted,
+          },
+        ]}
+      >
+        {label.toUpperCase()}
+      </Text>
+      <View style={styles.segmentRow}>
+        {options.map((option) => {
+          const active =
+            selected === option;
+          return (
+            <Pressable
+              key={option}
+              onPress={() =>
+                onSelect(option)
+              }
+              style={[
+                styles.segmentButton,
+                {
+                  backgroundColor: active
+                    ? t.primary
+                    : t.surface2,
+                },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.segmentText,
+                  {
+                    color: active
+                      ? "#FFFFFF"
+                      : t.muted,
+                    fontWeight: active
+                      ? "600"
+                      : "500",
+                  },
+                ]}
+              >
+                {option}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+/* -------------------------------------------------------------------------- */
+/* RECURRENCE EDITOR                                                          */
+/* -------------------------------------------------------------------------- */
+function RecurrenceEditor({
+  visible,
+  task,
+  onClose,
+  onSave,
+}: {
+  visible: boolean;
+  task: Task;
+  onClose: () => void;
+  onSave: (
+    updates: Parameters<
+      ReturnType<typeof useApp>["updateTask"]
+    >[2],
+  ) => void;
+}) {
+  const { t } = useApp();
+  const initialKind =
+    recurrenceKind(task);
+  const [kind, setKind] =
+    useState<RecurrenceKind>(
+      initialKind,
+    );
+  const [selectedDays, setSelectedDays] =
+    useState<string[]>(
+      recurrenceDays(task),
+    );
+  const [customRule, setCustomRule] =
+    useState(
+      initialKind === "custom"
+        ? task.recurrence ?? ""
+        : "",
+    );
+  const [endMode, setEndMode] =
+    useState<RecurrenceEndMode>(
+      task.recurrenceEnd
+        ? "date"
+        : "never",
+    );
+  const [endDate, setEndDate] =
+    useState<Date | null>(
+      parseInstant(task.recurrenceEnd),
+    );
+  const saveRule = () => {
+    if (kind === "none") {
+      onSave({
+        isRecurring: false,
+        recurrence: null,
+        recurrenceEnd: null,
+      });
+      return;
+    }
+    if (
+      kind === "weekly" &&
+      selectedDays.length === 0
+    ) {
+      Alert.alert(
+        "Select a day",
+        "Choose at least one day for a weekly repeat.",
+      );
+      return;
+    }
+    if (
+      kind === "custom" &&
+      !customRule.trim()
+    ) {
+      Alert.alert(
+        "Custom repeat",
+        "Describe the custom repeat rule.",
+      );
+      return;
+    }
+    let recurrence: string = kind;
+    if (kind === "weekly") {
+      const orderedDays =
+        weekDays
+          .map((day) => day.full)
+          .filter((day) =>
+            selectedDays.includes(day),
+          );
+      recurrence =
+        weeklyRule(orderedDays);
+    }
+    if (kind === "custom") {
+      recurrence =
+        customRule.trim();
+    }
+    let recurrenceEnd:
+      | string
+      | null = null;
+    if (endMode === "date") {
+      if (
+        !endDate ||
+        endDate.getTime() <= Date.now()
+      ) {
+        Alert.alert(
+          "Invalid end date",
+          "Choose a future end date.",
+        );
+        return;
+      }
+      recurrenceEnd =
+        combineLocalDateTime(
+          endDate,
+        ).toISOString();
+    }
+    onSave({
+      isRecurring: true,
+      recurrence,
+      recurrenceEnd,
+    });
+  };
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      onRequestClose={onClose}
+    >
+      <View style={styles.modalOverlay}>
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={onClose}
+        />
+        <View
+          style={[
+            styles.recurrenceSheet,
+            {
+              backgroundColor: t.bg,
+            },
+          ]}
+        >
+          <View
+            style={styles.sheetHeader}
+          >
+            <View style={styles.sheetTitleArea}>
+              <Text
+                style={[
+                  styles.sheetTitle,
+                  {
+                    color: t.text,
+                    fontFamily:
+                      "DMSerifDisplay",
+                  },
+                ]}
+              >
+                Repeat task
+              </Text>
+              <Text
+                style={[
+                  styles.sheetSubtitle,
+                  {
+                    color: t.muted,
+                  },
+                ]}
+              >
+                Choose how often this task
+                comes back.
+              </Text>
+            </View>
+            <Pressable
+              onPress={onClose}
+              style={[
+                styles.closeButton,
+                {
+                  backgroundColor:
+                    t.surface2,
+                },
+              ]}
+            >
+              <X
+                size={15}
+                color={t.muted}
+              />
+            </Pressable>
+          </View>
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={
+              styles.sheetContent
+            }
+          >
+            {(
+              [
+                [
+                  "none",
+                  "Does not repeat",
+                ],
+                ["daily", "Daily"],
+                ["weekly", "Weekly"],
+                ["monthly", "Monthly"],
+                ["custom", "Custom"],
+              ] as const
+            ).map(([value, label]) => {
+              const selected =
+                kind === value;
+              return (
+                <Pressable
+                  key={value}
+                  onPress={() =>
+                    setKind(value)
+                  }
+                  style={[
+                    styles.repeatOption,
+                    {
+                      backgroundColor:
+                        selected
+                          ? t.dueBg
+                          : t.surface,
+                      borderColor:
+                        selected
+                          ? t.primary
+                          : t.border,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.repeatOptionText,
+                      {
+                        color: selected
+                          ? t.primary
+                          : t.text,
+                        fontWeight: selected
+                          ? "600"
+                          : "500",
+                      },
+                    ]}
+                  >
+                    {label}
+                  </Text>
+                  <View
+                    style={[
+                      styles.radio,
+                      {
+                        backgroundColor:
+                          selected
+                            ? t.primary
+                            : t.border,
+                      },
+                    ]}
+                  />
+                </Pressable>
+              );
+            })}
+            {/* WEEKLY */}
+            {kind === "weekly" && (
+              <View style={styles.subSection}>
+                <Text
+                  style={[
+                    styles.smallLabel,
+                    {
+                      color: t.muted,
+                    },
+                  ]}
+                >
+                  REPEAT ON
+                </Text>
+                <View
+                  style={styles.weekRow}
+                >
+                  {weekDays.map(
+                    (day) => {
+                      const selected =
+                        selectedDays.includes(
+                          day.full,
+                        );
+                      return (
+                        <Pressable
+                          key={day.full}
+                          onPress={() =>
+                            setSelectedDays(
+                              (current) =>
+                                selected
+                                  ? current.filter(
+                                      (
+                                        value,
+                                      ) =>
+                                        value !==
+                                        day.full,
+                                    )
+                                  : [
+                                      ...current,
+                                      day.full,
+                                    ],
+                            )
+                          }
+                          style={[
+                            styles.dayButton,
+                            {
+                              backgroundColor:
+                                selected
+                                  ? t.primary
+                                  : t.surface,
+                              borderColor:
+                                selected
+                                  ? t.primary
+                                  : t.border,
+                            },
+                          ]}
+                        >
+                          <Text
+                            style={[
+                              styles.dayText,
+                              {
+                                color:
+                                  selected
+                                    ? "#FFFFFF"
+                                    : t.muted,
+                              },
+                            ]}
+                          >
+                            {day.short}
+                          </Text>
+                        </Pressable>
+                      );
+                    },
+                  )}
+                </View>
+              </View>
+            )}
+            {/* CUSTOM */}
+            {kind === "custom" && (
+              <View style={styles.subSection}>
+                <Text
+                  style={[
+                    styles.smallLabel,
+                    {
+                      color: t.muted,
+                    },
+                  ]}
+                >
+                  CUSTOM RULE
+                </Text>
+                <TextInput
+                  value={customRule}
+                  onChangeText={setCustomRule}
+                  placeholder="e.g. Every 2 weeks"
+                  placeholderTextColor={
+                    t.muted
+                  }
+                  style={[
+                    styles.customInput,
+                    {
+                      backgroundColor:
+                        t.surface,
+                      borderColor:
+                        t.border,
+                      color: t.text,
+                    },
+                  ]}
+                />
+              </View>
+            )}
+            {/* END */}
+            {kind !== "none" && (
+              <View style={styles.subSection}>
+                <Text
+                  style={[
+                    styles.smallLabel,
+                    {
+                      color: t.muted,
+                    },
+                  ]}
+                >
+                  END
+                </Text>
+                <View
+                  style={styles.endRow}
+                >
+                  <Pressable
+                    onPress={() =>
+                      setEndMode("never")
+                    }
+                    style={[
+                      styles.endButton,
+                      {
+                        backgroundColor:
+                          endMode ===
+                          "never"
+                            ? t.primary
+                            : t.surface,
+                        borderColor:
+                          endMode ===
+                          "never"
+                            ? t.primary
+                            : t.border,
+                      },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.endText,
+                        {
+                          color:
+                            endMode ===
+                            "never"
+                              ? "#FFFFFF"
+                              : t.muted,
+                        },
+                      ]}
+                    >
+                      Never
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() =>
+                      setEndMode("date")
+                    }
+                    style={[
+                      styles.endButton,
+                      {
+                        backgroundColor:
+                          endMode ===
+                          "date"
+                            ? t.primary
+                            : t.surface,
+                        borderColor:
+                          endMode ===
+                          "date"
+                            ? t.primary
+                            : t.border,
+                      },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.endText,
+                        {
+                          color:
+                            endMode ===
+                            "date"
+                              ? "#FFFFFF"
+                              : t.muted,
+                        },
+                      ]}
+                    >
+                      On a date
+                    </Text>
+                  </Pressable>
+                </View>
+                {endMode === "date" && (
+                  <Pressable
+                    onPress={() => {
+                      // Simple native date picker
+                      // can be added here with the
+                      // same DateTimePicker pattern.
+                    }}
+                    style={[
+                      styles.endDateButton,
+                      {
+                        backgroundColor:
+                          t.surface,
+                        borderColor:
+                          t.border,
+                      },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.valueText,
+                        {
+                          color: endDate
+                            ? t.text
+                            : t.muted,
+                        },
+                      ]}
+                    >
+                      {endDate
+                        ? endDate.toLocaleDateString(
+                            "en-US",
+                            {
+                              weekday:
+                                "short",
+                              month:
+                                "short",
+                              day: "numeric",
+                            },
+                          )
+                        : "Select end date"}
+                    </Text>
+                  </Pressable>
+                )}
+              </View>
+            )}
+            {/* BUTTONS */}
+            <View
+              style={styles.sheetActions}
+            >
+              <Pressable
+                onPress={onClose}
+                style={[
+                  styles.cancelButton,
+                  {
+                    backgroundColor:
+                      t.surface,
+                    borderColor:
+                      t.border,
+                  },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.actionText,
+                    {
+                      color: t.muted,
+                    },
+                  ]}
+                >
+                  Cancel
+                </Text>
+              </Pressable>
+              <Pressable
+                onPress={saveRule}
+                style={[
+                  styles.saveButton,
+                  {
+                    backgroundColor:
+                      t.primary,
+                  },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.actionText,
+                    {
+                      color: "#FFFFFF",
+                    },
+                  ]}
+                >
+                  Save repeat
+                </Text>
+              </Pressable>
+            </View>
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+}
 const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
-
   header: {
     paddingHorizontal: 20,
     paddingTop: 16,
     paddingBottom: 12,
   },
-
   backButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 6,
-    marginBottom: 16,
+    alignSelf: "flex-start",
+    marginBottom: 12,
   },
-
   backText: {
     fontSize: 14,
-    fontFamily: 'Outfit',
+    textTransform: "capitalize",
   },
-
-  titleRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
-  },
-
-  titleContainer: {
-    flex: 1,
-  },
-
-  badgesRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  titleButton: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "flex-start",
     gap: 8,
-    marginBottom: 8,
   },
-
-  priorityBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 999,
-  },
-
-  priorityText: {
-    fontSize: 12,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 1,
-    fontFamily: 'Outfit',
-  },
-
-  riskBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    borderRadius: 999,
-  },
-
-  riskText: {
-    fontSize: 11,
-    fontWeight: '600',
-    fontFamily: 'Outfit',
-  },
-
   title: {
+    flex: 1,
     fontSize: 20,
-    fontWeight: '700',
+    fontWeight: "700",
     lineHeight: 26,
-    fontFamily: 'DM Serif Display',
   },
-
-  body: {
+  titleEditRow: {
+    width: "100%",
+  },
+  titleInput: {
+    width: "100%",
+    borderWidth: 1.5,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    fontSize: 18,
+    fontWeight: "600",
+  },
+  scroll: {
     flex: 1,
   },
-
-  bodyContent: {
+  scrollContent: {
     paddingHorizontal: 20,
-    paddingBottom: 24,
+    paddingBottom: 20,
   },
-
-  brief: {
-    padding: 16,
-    borderRadius: 16,
-    borderWidth: 1,
-    marginBottom: 16,
-  },
-
-  briefText: {
-    fontSize: 14,
-    lineHeight: 22,
-    fontFamily: 'Outfit',
-  },
-
-  infoRow: {
-    flexDirection: 'row',
-    gap: 12,
-    marginBottom: 16,
-  },
-
   infoCard: {
-    flex: 1,
-    borderRadius: 16,
-    padding: 14,
+    marginBottom: 12,
     borderWidth: 1,
-    minHeight: 84,
+    borderRadius: 16,
+    padding: 16,
   },
-
-  infoHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: 6,
-  },
-
-  infoLabel: {
-    fontSize: 11.5,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    fontFamily: 'Outfit',
-  },
-
-  editValue: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  cardHeader: {
+    flexDirection: "row",
+    alignItems: "center",
     gap: 8,
+    marginBottom: 12,
   },
-
-  valueText: {
-    fontSize: 13.5,
-    fontWeight: '500',
-    flexShrink: 1,
-    fontFamily: 'Outfit',
+  cardTitle: {
+    fontSize: 13,
+    fontWeight: "700",
   },
-
-  editInput: {
-    width: '100%',
+  timingSummary: {
     borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    marginBottom: 10,
+  },
+  timingSummaryText: {
+    fontSize: 12,
+    fontWeight: "500",
+  },
+  editRow: {
+    minHeight: 38,
+    borderRadius: 9,
+    paddingHorizontal: 12,
+    marginTop: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  editLabel: {
+    fontSize: 11.5,
+  },
+  valueRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  valueText: {
+    fontSize: 12,
+  },
+  clearText: {
+    fontSize: 10,
+  },
+  smallLabel: {
+    fontSize: 10.5,
+    marginBottom: 7,
+    letterSpacing: 0.3,
+  },
+  segmentRow: {
+    flexDirection: "row",
+    gap: 6,
+  },
+  segmentButton: {
+    flex: 1,
+    borderRadius: 9,
+    paddingVertical: 9,
+    alignItems: "center",
+  },
+  segmentText: {
+    fontSize: 10.5,
+    textTransform: "capitalize",
+  },
+  recurrenceHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+  },
+  editButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    borderRadius: 999,
     paddingHorizontal: 8,
     paddingVertical: 5,
-    borderWidth: 1.5,
-    fontSize: 13.5,
-    fontFamily: 'Outfit',
   },
-
-  priorityCard: {
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    marginBottom: 16,
-    marginTop: 12,
+  editButtonText: {
+    fontSize: 10.5,
+    fontWeight: "600",
   },
-
-  priorityHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-
-  priorityHeading: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  repeatRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
     gap: 8,
-    flex: 1,
   },
-
-  priorityLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 0.7,
-    fontFamily: 'Outfit',
+  repeatText: {
+    fontSize: 13,
   },
-
-  scoreBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-
-  score: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#FFFFFF',
-    fontFamily: 'Outfit',
-  },
-
-  scoreTotal: {
+  repeatEnd: {
     fontSize: 11,
-    color: 'rgba(255,255,255,0.7)',
-    marginLeft: 2,
-    fontFamily: 'Outfit',
   },
-
-  priorityWhy: {
-    fontSize: 13,
-    lineHeight: 20,
-    fontFamily: 'Outfit',
-  },
-
-  workflow: {
-    marginBottom: 16,
-  },
-
-  workflowLabel: {
-    fontSize: 13,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 0.7,
-    marginBottom: 10,
-    fontFamily: 'Outfit',
-  },
-
-  step: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
-    width: '100%',
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderWidth: 1,
+  notesHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     marginBottom: 8,
   },
-
-  checkbox: {
-    width: 20,
-    height: 20,
-    borderRadius: 999,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1.5,
-    marginTop: 1,
+  notesText: {
+    fontSize: 12.5,
+    lineHeight: 19,
   },
-
-  stepText: {
-    flex: 1,
-    fontSize: 14,
-    lineHeight: 20,
-    fontFamily: 'Outfit',
+  notesInput: {
+    minHeight: 100,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+    fontSize: 12.5,
+    lineHeight: 19,
   },
-
-  actions: {
+  footer: {
     paddingHorizontal: 20,
     paddingVertical: 16,
     borderTopWidth: 1,
-    gap: 10,
   },
+  askAIButton: {
+  width: "100%",
+  minHeight: 46,
+  borderRadius: 12,
+  borderWidth: 1,
+  flexDirection: "row",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: 8,
+  marginBottom: 10,
+},
 
-  urgentButton: {
-    width: '100%',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    borderRadius: 12,
-    paddingVertical: 14,
-    borderWidth: 1.5,
-  },
-
-  urgentText: {
-    fontSize: 14.5,
-    fontWeight: '600',
-    fontFamily: 'Outfit',
-  },
-
+askAIText: {
+  fontSize: 13.5,
+  fontWeight: "600",
+},
   completeButton: {
-    width: '100%',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
+    width: "100%",
+    minHeight: 54,
     borderRadius: 12,
-    paddingVertical: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
   },
-
   completeText: {
+    color: "#FFFFFF",
     fontSize: 15,
-    fontWeight: '700',
-    color: '#FFFFFF',
-    fontFamily: 'Outfit',
+    fontWeight: "700",
   },
-
-  empty: {
+  completePressed: {
+    opacity: 0.85,
+    transform: [{ scale: 0.98 }],
+  },
+  pickerOverlay: {
     flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: "rgba(0,0,0,0.48)",
+    justifyContent: "center",
+    paddingHorizontal: 20,
   },
-
-  emptyText: {
+  pickerSheet: {
+    borderWidth: 1,
+    borderRadius: 20,
+    paddingTop: 20,
+    paddingHorizontal: 16,
+    paddingBottom: 16,
+    overflow: "hidden",
+  },
+  pickerTitle: {
+    fontSize: 17,
+    fontWeight: "700",
+    textAlign: "center",
+    marginBottom: 8,
+  },
+  pickerActions: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: 10,
+    marginTop: 10,
+  },
+  pickerAction: {
+    minWidth: 88,
+    minHeight: 42,
+    borderWidth: 1,
+    borderRadius: 11,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 14,
+  },
+  pickerCancelText: {
     fontSize: 14,
-    fontFamily: 'Outfit',
+    fontWeight: "600",
   },
-})
+  pickerConfirmText: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  /* Recurrence modal */
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.42)",
+    justifyContent: "flex-end",
+  },
+  recurrenceSheet: {
+    maxHeight: "88%",
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingTop: 20,
+    paddingHorizontal: 20,
+  },
+  sheetHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    marginBottom: 16,
+  },
+  sheetTitleArea: {
+    flex: 1,
+    paddingRight: 16,
+  },
+  sheetTitle: {
+    fontSize: 20,
+    lineHeight: 25,
+  },
+  sheetSubtitle: {
+    fontSize: 11.5,
+    marginTop: 2,
+  },
+  closeButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  sheetContent: {
+    paddingBottom: 24,
+  },
+  repeatOption: {
+    minHeight: 48,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    marginBottom: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  repeatOptionText: {
+    fontSize: 13,
+  },
+  radio: {
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+  },
+  subSection: {
+    marginTop: 8,
+  },
+  weekRow: {
+    flexDirection: "row",
+    gap: 5,
+  },
+  dayButton: {
+    flex: 1,
+    minHeight: 38,
+    borderWidth: 1,
+    borderRadius: 9,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  dayText: {
+    fontSize: 9.5,
+    fontWeight: "600",
+  },
+  customInput: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    fontSize: 12.5,
+  },
+  endRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  endButton: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 11,
+    alignItems: "center",
+  },
+  endText: {
+    fontSize: 11.5,
+    fontWeight: "600",
+  },
+  endDateButton: {
+    marginTop: 8,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+  },
+  sheetActions: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 20,
+  },
+  cancelButton: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 13,
+    alignItems: "center",
+  },
+  saveButton: {
+    flex: 1,
+    borderRadius: 12,
+    paddingVertical: 13,
+    alignItems: "center",
+  },
+  actionText: {
+    fontSize: 12.5,
+    fontWeight: "700",
+  },
+  pressed: {
+    opacity: 0.6,
+  },
+});

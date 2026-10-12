@@ -5,28 +5,51 @@ export type EnergyLevel =
   | 'high'
   | null
 
+export type Effort = 'low' | 'medium' | 'high' | null
+export type Urgency = 'low' | 'medium' | 'high' | 'urgent' | null
+export type ScheduleType = 'scheduled' | 'flexible'
+export type TaskSection = 'work' | 'personal' | 'leisure'
+
 export interface Task {
   id: string
   title: string
   section: 'work' | 'personal' | 'leisure'
   steps?: string[]
   brief?: string
-  deadline: string
+  deadline: string | null
   priority: 'high' | 'medium' | 'low'
   priorityScore?: number
   priorityWhy?: string
   estimatedTime?: string
   scheduledTime?: string
   atRisk?: boolean
-  blocked?: boolean
+  reason?: 'pinned' | 'deadline_risk' | 'energy_match' | 'top_score'
   dueToday?: boolean
-  
+  effort?: Effort
+  urgency?: Urgency
+  scheduleType?: ScheduleType
+  scheduledStart?: string | null
+  scheduledEnd?: string | null
+  hasExplicitTime?: boolean
+  blocked?: boolean
+  isBlocked?: boolean
+  isOverdue?: boolean
+  isRecurring?: boolean
+  recurrence?: string | null
+  recurrenceEnd?: string | null
+  completed?: boolean
 }
+
+export type TaskUpdates = Partial<Pick<Task,
+  'title' | 'brief' | 'effort' | 'urgency' | 'deadline' |
+  'scheduleType' | 'scheduledStart' | 'scheduledEnd' | 'hasExplicitTime' |
+  'isBlocked' | 'isRecurring' | 'recurrence' | 'recurrenceEnd'
+>>
 
 export interface HistoryTask {
   id: string
   title: string
-  section: 'work' | 'personal' | 'leisure'
+  section: 'work' | 'personal' | 'leisure' | null
   type: 'completed' | 'expired'
   date: string
 }
@@ -66,28 +89,23 @@ export interface AppContextType {
   t: Theme
 
   tasks: TaskStore
-  completeTask: (id: string) => void
-  addTask: (task: Task) => void
-  updateTask: (
-  id: string,
-  section: 'work' | 'personal' | 'leisure',
-  updates: Partial<{
-    title: string
-    brief: string | null
-    deadline: string | null
-    estimated_time_minutes: number | null
-    status: string
-  }>
-) => Promise<void>
+  completeTask: (id: string) => Promise<void>
+  deleteTask: (id: string, section: TaskSection) => Promise<void>
+  addTask: (task: Task) => Promise<void>
+  updateTask: (id: string, section: TaskSection, updates: TaskUpdates) => Promise<void>
   energy: EnergyLevel
-  setEnergy: (e: 'low' | 'focused' | 'high') => void
+  setEnergy: (e: EnergyLevel) => void
 
   user: User
-
+  overdueCount: number
+  suggestedList: Task[]
+  rankedTasks: Task[]
+  overdueTasks: Task[]
+  dueTodayTasks: Task[]
+  atRiskTasks: Task[]
   dueTodayCount: number
   atRiskCount: number
   suggestedTask: Task | null
   history: HistoryTask[]
   refreshTasks: () => Promise<void>
 }
-

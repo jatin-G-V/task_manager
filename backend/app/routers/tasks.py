@@ -26,7 +26,7 @@ def create_task(
         )
     except ValueError as e:
         raise HTTPException(
-            status_code=500,
+            status_code=400,
             detail=str(e),
         )
 
@@ -77,6 +77,25 @@ def recommended_tasks(
         limit=limit,
         energy=energy,
         exclude_ids=exclude_ids,
+    )
+
+
+# ============================================================
+# DASHBOARD
+#
+# IMPORTANT:
+# This MUST be before /tasks/{task_id}
+# Otherwise "dashboard" will be treated as a task UUID.
+# ============================================================
+
+@router.get("/tasks/dashboard")
+def dashboard(
+    energy: Optional[Literal["low", "medium", "high"]] = None,
+    user_id: str = Depends(get_current_user),
+):
+    return task_service.get_dashboard(
+        user_id,
+        energy=energy,
     )
 
 
@@ -153,10 +172,13 @@ def complete_task(
     user_id: str = Depends(get_current_user),
 ):
     try:
-        return task_service.complete_tasks(
+        completed = task_service.complete_tasks(
             user_id,
             [task_id],
         )
+        if not completed:
+            raise HTTPException(status_code=404, detail="Task not found")
+        return completed[0]
 
     except LookupError:
         raise HTTPException(
@@ -179,6 +201,9 @@ def delete_task(
             user_id,
             [task_id],
         )
+
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Task not found")
 
         return {
             "deleted": True,

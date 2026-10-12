@@ -1,5 +1,5 @@
 import React from 'react'
-import { View, Text, Pressable, StyleSheet } from 'react-native'
+import { View, Text, Pressable, StyleSheet, Switch } from 'react-native'
 import { LinearGradient } from 'expo-linear-gradient'
 import { useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
@@ -8,7 +8,7 @@ import { supabase } from '../lib/supabase'
 import { Archive, Bell, LogOut, X, ChevronRight } from './icons'
 
 export default function SideDrawer() {
-  const { t, user } = useApp()
+  const { t, user, darkMode, toggleDark } = useApp()
   const router = useRouter()
 
   const items = [
@@ -53,6 +53,24 @@ export default function SideDrawer() {
 
       {/* MENU ITEMS */}
       <View style={styles.navContainer}>
+        <View style={[styles.navItem, { backgroundColor: t.surface, borderColor: t.border }]}>
+          <View style={[styles.iconContainer, { backgroundColor: t.surface2 }]}>
+            <Text style={{ color: t.muted, fontSize: 18, lineHeight: 21 }}>◐</Text>
+          </View>
+          <View style={styles.themeCopy}>
+            <Text style={[styles.navLabel, { color: t.text, marginLeft: 0 }]}>Dark mode</Text>
+            <Text style={[styles.themeStatus, { color: t.muted }]}>{darkMode ? 'On' : 'Off'}</Text>
+          </View>
+          <Switch
+            value={darkMode}
+            onValueChange={toggleDark}
+            accessibilityRole="switch"
+            accessibilityLabel="Dark mode"
+            accessibilityState={{ checked: darkMode }}
+            trackColor={{ false: t.border, true: t.primary }}
+            thumbColor="#FFFFFF"
+          />
+        </View>
         {items.map((item) => {
           const Icon = item.icon
           return (
@@ -197,6 +215,16 @@ const styles = StyleSheet.create({
     marginLeft: 12,
     fontSize: 15,
     fontWeight: '500',
+  },
+
+  themeCopy: {
+    flex: 1,
+    marginLeft: 12,
+  },
+
+  themeStatus: {
+    fontSize: 12,
+    marginTop: 2,
   },
 
   chevron: {

@@ -5,17 +5,22 @@ import {
   Animated,
   PanResponder,
   Dimensions,
+  Text,
+  View,
 } from 'react-native'
-import { useRouter } from 'expo-router'
+import { useRouter, usePathname } from 'expo-router'
 
 import { useApp } from '../context/AppContext'
-import { Plus } from './icons'
+import { Plus, Sparkles } from './icons'
 
 const { width, height } = Dimensions.get('window')
 
 export default function FAB() {
   const { t } = useApp()
   const router = useRouter()
+  const pathname = usePathname()
+
+  const isDashboard = pathname === '/' || pathname === '/dashboard'
 
   const pan = useRef(new Animated.ValueXY()).current
 
@@ -59,10 +64,9 @@ export default function FAB() {
         const currentX = (pan.x as any).__getValue()
         const currentY = (pan.y as any).__getValue()
 
-        const maxX = width - 76
+        const maxX = width - (isDashboard ? width - 40 : 76)
         const minX = -width + 76
 
-        // Keep button reasonably inside screen
         const clampedX = Math.max(
           minX,
           Math.min(maxX, currentX)
@@ -89,10 +93,17 @@ export default function FAB() {
     })
   ).current
 
+  const openAgent = () => {
+    router.push('/ChatScreen')
+  }
+
   return (
     <Animated.View
       style={[
         styles.wrapper,
+        isDashboard
+          ? styles.dashboardWrapper
+          : styles.defaultWrapper,
         {
           transform: pan.getTranslateTransform(),
         },
@@ -100,9 +111,13 @@ export default function FAB() {
       {...panResponder.panHandlers}
     >
       <Pressable
-        onPress={() => router.push('/add-task')}
+        onPress={openAgent}
+        accessibilityRole="button"
+        accessibilityLabel="Add a task or ask AI"
         style={({ pressed }) => [
-          styles.fab,
+          isDashboard
+            ? styles.dashboardFab
+            : styles.fab,
           {
             backgroundColor: t.primary,
             shadowColor: t.primary,
@@ -110,10 +125,29 @@ export default function FAB() {
           pressed && styles.pressed,
         ]}
       >
-        <Plus
-          size={24}
-          color="#FFFFFF"
-        />
+        {isDashboard ? (
+          <View style={styles.dashboardContent}>
+            <Sparkles
+              size={17}
+              color="#FFFFFF"
+            />
+
+            <Text style={styles.dashboardText}>
+              Add a task or ask anything...
+            </Text>
+          </View>
+        ) : (
+          <View
+                    style={[
+                      styles.aiIcon,
+                      {
+                        backgroundColor: t.primary,
+                      },
+                    ]}
+                  >
+                    <Sparkles size={17} color="#FFFFFF" />
+                  </View>
+        )}
       </Pressable>
     </Animated.View>
   )
@@ -122,9 +156,54 @@ export default function FAB() {
 const styles = StyleSheet.create({
   wrapper: {
     position: 'absolute',
+    zIndex: 100,
+  },
+
+  dashboardWrapper: {
+    left: 20,
     right: 20,
     bottom: 90,
-    zIndex: 100,
+  },
+
+  defaultWrapper: {
+    right: 20,
+    bottom: 90,
+  },
+
+  dashboardFab: {
+    width: '100%',
+    height: 48,
+    borderRadius: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+
+    shadowOpacity: 0.33,
+    shadowOffset: {
+      width: 0,
+      height: 4,
+    },
+    shadowRadius: 20,
+
+    elevation: 8,
+  },
+
+  dashboardContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+
+  dashboardText: {
+    color: '#FFFFFF',
+    fontSize: 13.5,
+    fontWeight: '500',
+  },
+  aiIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
   },
 
   fab: {

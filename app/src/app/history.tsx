@@ -227,14 +227,9 @@ export default function HistoryScreen() {
                       style={styles.cardIcon}
                     >
                       <Text>
-                        {
-                          sectionEmoji[
-                            item.section as
-                              | 'work'
-                              | 'personal'
-                              | 'leisure'
-                          ]
-                        }
+                        {item.section
+                          ? sectionEmoji[item.section]
+                          : '📌'}
                       </Text>
                     </View>
 
@@ -257,9 +252,9 @@ export default function HistoryScreen() {
                         ]}
                       >
                         {item.section
-                          .charAt(0)
-                          .toUpperCase() +
-                          item.section.slice(1)}
+                          ? item.section.charAt(0).toUpperCase() +
+                            item.section.slice(1)
+                          : 'Unassigned'}
                         {'  •  '}
                         Completed
                       </Text>

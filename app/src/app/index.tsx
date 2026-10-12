@@ -1,215 +1,413 @@
-import React, { useState } from 'react'
-import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react'
+
+
+
 import {
+
   View,
+
   Text,
+
   ScrollView,
+
   Pressable,
-  TextInput,
+
   StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
-  Button,
+
 } from 'react-native'
-import { useRouter } from 'expo-router'
-import { SafeAreaView } from 'react-native-safe-area-context'
-import { useApp } from '../context/AppContext'
-import BottomTabBar from '../components/BottomTabBar'
-import FAB from '../components/FAB'
+
+
+
 import {
+
+  useSafeAreaInsets,
+
+  SafeAreaView,
+
+} from 'react-native-safe-area-context'
+
+
+
+import { useRouter, useFocusEffect, type Href } from 'expo-router'
+
+
+
+import { useApp } from '../context/AppContext'
+
+
+
+import BottomTabBar from '../components/BottomTabBar'
+
+import FAB from '../components/FAB'
+
+import { whenLabel, reasonLabel, greeting } from '../utils/taskTime'
+import { recurrenceLabel } from '../utils/taskFormat'
+
+import {
+
+  AlertTriangle,
+
+  Check,
+
   ChevronRight,
+
   Sparkles,
+
   UserCircle,
-  Send,
+
 } from '../components/icons'
 
-import type { ChatMessage } from '../data'
-import {
-  chatSuggestions,
-  getAIResponse,
-} from '../data'
-import { apiFetch } from '../lib/apiClient'
-function formatDeadline(iso: string): string {
-  if (!iso) return 'No deadline set'
-  const date = new Date(iso)
-  const hasTime = date.getHours() !== 0 || date.getMinutes() !== 0
-  const dateStr = date.toLocaleDateString()
-  if (!hasTime) return dateStr
-  const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  return `${dateStr} · ${timeStr}`
-}
+
+
+import type {
+
+  EnergyLevel,
+
+  Task,
+
+} from '../types'
+
+
+
+
+
+// ============================================================
+
+// HELPERS
+
+// ============================================================
+
+
+
+
+
+
+
+const energyOptions: {
+
+  value: Exclude<EnergyLevel, null>
+
+  label: string
+
+}[] = [
+
+  {
+
+    value: 'low',
+
+    label: 'Low energy',
+
+  },
+
+  {
+
+    value: 'focused',
+
+    label: 'Focused',
+
+  },
+
+  {
+
+    value: 'high',
+
+    label: 'High energy',
+
+  },
+
+]
+
+
+
+
+
+// ============================================================
+
+const DIGEST_ROUTE = '/dailyDigest' as Href
+const OVERDUE_ROUTE = '/overDue' as Href
+
+
+// DASHBOARD
+
+// ============================================================
+
+
+
 export default function DashboardScreen() {
   const {
     t,
     user,
     dueTodayCount,
     atRiskCount,
-    suggestedTask,
+    suggestedList,
+    rankedTasks,
+    overdueTasks,
     tasks,
+    completeTask,
     refreshTasks,
+    energy,
+    setEnergy,
   } = useApp()
 
   const router = useRouter()
-// inside the component, alongside your other hooks:
-const insets = useSafeAreaInsets()
-  const [chatInput, setChatInput] = useState('')
+  const insets = useSafeAreaInsets()
 
-  const [messages, setMessages] = useState<ChatMessage[]>([
-  {
-    id: 'init',
-    role: 'ai',
-    text: `Good morning, ${user.name ? user.name.split(' ')[0] : 'there'}. You have a busy day — let me know what you need help with.`,
-  },
-])
+  useFocusEffect(
+    useCallback(() => {
+      refreshTasks()
+      const id = setInterval(refreshTasks, 5 * 60 * 1000)
+      return () => clearInterval(id)
+    }, [])
+  )
 
-  const [chatActive, setChatActive] = useState(false)
+  const allTasks = useMemo(
+    () => [...tasks.work, ...tasks.personal, ...tasks.leisure],
+    [tasks]
+  )
 
-  // --------------------------------
-  // AI CHAT
-  // --------------------------------
-const [sending, setSending] = useState(false)
+  const [skip, setSkip] = useState(0)
 
-const sendMessage = async (text: string) => {
-  if (!text.trim() || sending) return
-  setSending(true)
+  const candidates = useMemo(() => {
+    const seen = new Set(suggestedList.map((x) => x.id))
+    return [...suggestedList, ...rankedTasks.filter((x) => !seen.has(x.id))]
+  }, [suggestedList, rankedTasks])
 
-  const userMsg: ChatMessage = {
-    id: `u${Date.now()}`,
-    role: 'user',
-    text,
+  useEffect(() => {
+    setSkip(0)
+  }, [suggestedList])
+
+  const upNext = candidates.length > 0 ? candidates[skip % candidates.length] : null
+
+  const showSomethingElse = () => setSkip((s) => s + 1)
+
+  const visibleTasks = useMemo(
+    () => rankedTasks.filter((x) => x.id !== upNext?.id),
+    [rankedTasks, upNext?.id]
+  )
+
+  const toggleEnergy = (value: Exclude<EnergyLevel, null>) => {
+    setSkip(0)
+    setEnergy(energy === value ? null : value)
   }
 
-  setMessages((prev) => [...prev, userMsg])
+  const handleComplete = async (id: string) => {
+    try {
+      await completeTask(id)
+    } catch (error) {
+      console.error('Complete failed:', error)
+    }
+  }
 
-  try {
-    const result = await apiFetch('/agent/chat', {
-      method: 'POST',
-      body: JSON.stringify({
-        messages: [
-          ...messages.map((msg) => ({
-            role: msg.role === 'ai' ? 'assistant' : 'user',
-            content: msg.text,
-          })),
-          { role: 'user', content: text },
-        ],
-      }),
+  const dayOfWeek = new Date().toLocaleDateString('en-US', { weekday: 'long' })
+  const dateStr = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric' })
+
+  const reschedule = (title: string) =>
+    router.push({
+      pathname: '/ChatScreen',
+      params: { prefill: `Reschedule ${title} to ` },
     })
 
-    const aiMsg: ChatMessage = {
-      id: `a${Date.now()}`,
-      role: 'ai',
-      text: result.reply,
-    }
+// RENDER
 
-    setMessages((prev) => [...prev, aiMsg])
-
-    if (result.tasks_changed) {
-      await refreshTasks()
-    }
-  } catch (error) {
-    console.error('AGENT ERROR:', error)
-
-    const aiMsg: ChatMessage = {
-      id: `a${Date.now()}`,
-      role: 'ai',
-      text: 'Something went wrong. Please try again.',
-    }
-
-    setMessages((prev) => [...prev, aiMsg])
-  } finally {
-    setSending(false)
-  }
-
-  setChatInput('')
-  setChatActive(true)
-}
-
-  // --------------------------------
-  // DATE
-  // --------------------------------
-
-  const dayOfWeek = new Date().toLocaleDateString(
-    'en-US',
-    {
-      weekday: 'long',
-    }
-  )
-
-  const dateStr = new Date().toLocaleDateString(
-    'en-US',
-    {
-      month: 'long',
-      day: 'numeric',
-    }
-  )
-  
+  // ==========================================================
 
 
-const ChatWrapper = chatActive ? SafeAreaView : View
-
-
-
-  // --------------------------------
-  // UI
-  // --------------------------------
 
   return (
-    <KeyboardAvoidingView
+
+    <View
+
       style={[
+
         styles.container,
+
         {
-          backgroundColor: t.bg,
+
+          backgroundColor:
+
+            t.bg,
+
         },
+
       ]}
-      behavior={
-        Platform.OS === 'ios'
-          ? 'padding'
-          : undefined
-      }
+
     >
 
-      {/* ================================ */}
-      {/* TOP CONTENT */}
-      {/* ================================ */}
+      <SafeAreaView
 
-      <SafeAreaView style={styles.mainContent}>
+        style={styles.safeArea}
 
-        {/* HEADER */}
+        edges={['top']}
 
-        <View style={styles.header}>
-          <View style={styles.headerTextContainer}>
+      >
 
-            <Text
-              style={[
-                styles.greeting,
-                {
-                  color: t.text,
-                },
-              ]}
+        <ScrollView
+
+          showsVerticalScrollIndicator={
+
+            false
+
+          }
+
+          contentContainerStyle={[
+
+            styles.scrollContent,
+
+            {
+
+              paddingBottom:
+
+                100 + insets.bottom,
+
+            },
+
+          ]}
+
+        >
+
+
+
+          {/* ==================================================
+
+              HEADER
+
+          ================================================== */}
+
+
+
+          <View
+
+            style={styles.header}
+
+          >
+
+            <View
+
+              style={
+
+                styles.headerTextContainer
+
+              }
+
             >
-              Good morning,{' '}
-              {user.name
-                ? user.name.split(' ')[0]
-                : 'there'}
-            </Text>
 
-            <Text
-              style={[
-                styles.date,
+              <Text
+
+                style={[
+
+                  styles.greeting,
+
+                  {
+
+                    color: t.text,
+
+                  },
+
+                ]}
+
+              >
+
+                {greeting(user.name)}
+
+              </Text>
+
+
+
+              <Text
+
+                style={[
+
+                  styles.date,
+
+                  {
+
+                    color: t.muted,
+
+                  },
+
+                ]}
+
+              >
+
+                {dayOfWeek},{' '}
+
+                {dateStr}
+
+              </Text>
+
+            </View>
+
+
+
+            <Pressable
+
+              onPress={() =>
+
+                router.push(
+
+                  '/menu'
+
+                )
+
+              }
+
+              style={({ pressed }) => [
+
+                styles.profileButton,
+
                 {
-                  color: t.muted,
+
+                  backgroundColor:
+
+                    t.surface,
+
+                  borderColor:
+
+                    t.border,
+
                 },
+
+                pressed &&
+
+                  styles.pressed,
+
               ]}
+
             >
-              {dayOfWeek}, {dateStr}
-            </Text>
+
+              <UserCircle
+
+                size={22}
+
+                color={t.muted}
+
+              />
+
+            </Pressable>
 
           </View>
 
+
+
+
+
+          {/* ==================================================
+
+              DAILY DIGEST
+
+          ================================================== */}
+
+
+
           <Pressable
-            onPress={() => router.push('/menu')}
+            onPress={() => router.push(DIGEST_ROUTE)}
             style={({ pressed }) => [
-              styles.profileButton,
+              styles.digestCard,
               {
                 backgroundColor: t.surface,
                 borderColor: t.border,
@@ -217,985 +415,2496 @@ const ChatWrapper = chatActive ? SafeAreaView : View
               pressed && styles.pressed,
             ]}
           >
-            <UserCircle
-              size={22}
-              color={t.muted}
-            />
-          </Pressable>
-        </View>
+            <View style={styles.digestContent}>
+              {/* Due today */}
+              <View style={styles.digestItem}>
+                <View
+                  style={[
+                    styles.statusDot,
+                    { backgroundColor: t.due },
+                  ]}
+                />
 
-
-        {/* ================================ */}
-        {/* DAILY DIGEST */}
-        {/* ================================ */}
-
-        <View
-          style={[
-            styles.digestCard,
-            {
-              backgroundColor: t.surface,
-              borderColor: t.border,
-            },
-          ]}
-        >
-
-          <View style={styles.digestContent}>
-
-            {/* Due today */}
-
-            <View style={styles.digestItem}>
-
-              <View
-                style={[
-                  styles.statusDot,
-                  {
-                    backgroundColor: t.due,
-                  },
-                ]}
-              />
-
-              <Text
-                style={[
-                  styles.digestText,
-                  {
-                    color: t.text,
-                  },
-                ]}
-              >
                 <Text
                   style={[
-                    styles.digestNumber,
-                    {
-                      color: t.due,
-                    },
+                    styles.digestText,
+                    { color: t.text },
                   ]}
-                >
-                  {dueTodayCount}
-                </Text>{' '}
-                due today
-              </Text>
-
-            </View>
-
-
-            {/* Divider */}
-
-            <View
-              style={[
-                styles.digestDivider,
-                {
-                  backgroundColor: t.border,
-                },
-              ]}
-            />
-              
-
-            {/* At risk */}
-
-            <View style={styles.digestItem}>
-
-              <View
-                style={[
-                  styles.statusDot,
-                  {
-                    backgroundColor: t.risk,
-                  },
-                ]}
-              />
-
-              <Text
-                style={[
-                  styles.digestText,
-                  {
-                    color: t.text,
-                  },
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.digestNumber,
-                    {
-                      color: t.risk,
-                    },
-                  ]}
-                >
-                  {atRiskCount}
-                </Text>{' '}
-                at risk
-              </Text>
-
-            </View>
-
-          </View>
-
-          <ChevronRight
-            size={16}
-            color={t.muted}
-          />
-
-        </View>
-
-
-        {/* ================================ */}
-        {/* SUGGESTED FOCUS */}
-        {/* ================================ */}
-
-        {suggestedTask && (
-          <Pressable
-            onPress={() =>
-              router.push({
-              pathname: '/task-details',
-              params: {
-                id: suggestedTask.id,
-                section: suggestedTask.section,
-              },
-            })
-            }
-            style={({ pressed }) => [
-              styles.suggestedCard,
-              {
-                backgroundColor: `${t.primary}12`,
-                borderColor: `${t.primary}30`,
-              },
-              pressed && styles.pressed,
-            ]}
-          >
-
-            <View style={styles.suggestedHeader}>
-
-              <Sparkles
-                size={14}
-                color={t.primary}
-              />
-
-              <Text
-                style={[
-                  styles.suggestedLabel,
-                  {
-                    color: t.primary,
-                  },
-                ]}
-              >
-                Suggested Focus
-              </Text>
-
-            </View>
-
-
-            <Text
-              style={[
-                styles.suggestedTitle,
-                {
-                  color: t.text,
-                },
-              ]}
-            >
-              {suggestedTask.title}
-            </Text>
-
-
-            <View style={styles.suggestedFooter}>
-
-              <Text
-                style={[
-                  styles.deadline,
-                  {
-                    color: t.muted,
-                  },
-                ]}
-              >
-                {formatDeadline(suggestedTask.deadline)}
-              </Text>
-
-              <Text
-                style={[
-                  styles.openText,
-                  {
-                    color: t.primary,
-                  },
-                ]}
-              >
-                Tap to open →
-              </Text>
-
-            </View>
-
-          </Pressable>
-        )}
-
-
-        {/* ================================ */}
-        {/* AI ASSISTANT */}
-        {/* ================================ */}
-
-        <ChatWrapper
-          style={[
-            styles.aiCard,
-            chatActive && styles.aiCardFullScreen,
-            { backgroundColor: t.surface, borderColor: t.border },
-          ]}
-          {...(chatActive ? { edges: ['top', 'bottom'] } : {})}
-        >
-
-          {/* AI HEADER */}
-
-          <View
-            style={[
-              styles.aiHeader,
-              {
-                borderBottomColor: t.border,
-              },
-            ]}
-          >
-
-            <View style={styles.aiHeaderLeft}>
-              {chatActive && (
-                <Pressable
-                  onPress={() => setChatActive(false)}
-                  style={styles.chatBackButton}
                 >
                   <Text
                     style={[
-                      styles.chatBackText,
-                      { color: t.text },
+                      styles.digestNumber,
+                      { color: t.due },
                     ]}
                   >
-                    ←
-                  </Text>
-                </Pressable>
-              )}
-              <View
-                style={[
-                  styles.aiIcon,
-                  {
-                    backgroundColor: t.primary,
-                  },
-                ]}
-              >
-                <Sparkles
-                  size={13}
-                  color="#FFFFFF"
-                />
+                    {dueTodayCount}
+                  </Text>{' '}
+                  due today
+                </Text>
               </View>
 
-              <Text
-                style={[
-                  styles.aiTitle,
-                  {
-                    color: t.text,
-                  },
-                ]}
-              >
-                AI Assistant
-              </Text>
-
-            </View>
-
-
-            <View style={styles.onlineContainer}>
-
               <View
                 style={[
-                  styles.onlineDot,
-                  {
-                    backgroundColor: t.success,
-                  },
+                  styles.digestDivider,
+                  { backgroundColor: t.border },
                 ]}
               />
 
+              {/* At risk */}
+              <View style={styles.digestItem}>
+                <View
+                  style={[
+                    styles.statusDot,
+                    { backgroundColor: t.risk },
+                  ]}
+                />
+
+                <Text
+                  style={[
+                    styles.digestText,
+                    { color: t.text },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.digestNumber,
+                      { color: t.risk },
+                    ]}
+                  >
+                    {atRiskCount}
+                  </Text>{' '}
+                  at risk
+                </Text>
+              </View>
+            </View>
+
+            <ChevronRight
+              size={16}
+              color={t.muted}
+            />
+          </Pressable>
+
+
+
+
+
+          {/* ==================================================
+
+              LOADING / EMPTY
+
+          ================================================== */}
+
+
+
+          {allTasks.length === 0 ? (
+
+            <View
+
+              style={[
+
+                styles.emptyCard,
+
+                {
+
+                  backgroundColor:
+
+                    t.surface,
+
+                  borderColor:
+
+                    t.border,
+
+                },
+
+              ]}
+
+            >
+
+              <Sparkles
+
+                size={22}
+
+                color={t.primary}
+
+              />
+
+
+
               <Text
+
                 style={[
-                  styles.onlineText,
+
+                  styles.emptyTitle,
+
                   {
-                    color: t.muted,
+
+                    color:
+
+                      t.text,
+
                   },
+
                 ]}
+
               >
-                Online
+
+                Your day is clear.
+
               </Text>
+
+
+
+              <Text
+
+                style={[
+
+                  styles.emptySubtitle,
+
+                  {
+
+                    color:
+
+                      t.muted,
+
+                  },
+
+                ]}
+
+              >
+
+                Add a task and I'll
+
+                help you decide what
+
+                to do next.
+
+              </Text>
+
+
+
+              <Pressable
+
+                onPress={() =>
+
+                  router.push(
+
+                    '/ChatScreen'
+
+                  )
+
+                }
+
+                style={({ pressed }) => [
+
+                  styles.emptyButton,
+
+                  {
+
+                    backgroundColor:
+
+                      t.primary,
+
+                  },
+
+                  pressed &&
+
+                    styles.pressed,
+
+                ]}
+
+              >
+
+                <Text
+
+                  style={
+
+                    styles.emptyButtonText
+
+                  }
+
+                >
+
+                  Tell me your first task
+
+                </Text>
+
+              </Pressable>
 
             </View>
 
-          </View>
+          ) : (
+
+            <>
 
 
-          {/* ================================ */}
-          {/* MESSAGE AREA */}
-          {/* ================================ */}
 
-          <ScrollView
-            style={styles.messagesScroll}
-            contentContainerStyle={styles.messagesContainer}
-            showsVerticalScrollIndicator={false}
-            keyboardShouldPersistTaps="handled"
-          >
+              {/* ==================================================
 
-            {messages.map((msg) => (
+                  SUGGESTED / UP NEXT
 
-              <View
-                key={msg.id}
-                style={[
-                  styles.messageRow,
-                  msg.role === 'user'
-                    ? styles.userMessageRow
-                    : styles.aiMessageRow,
-                ]}
-              >
+              ================================================== */}
+
+
+
+              {upNext && (
 
                 <View
-                  style={styles.messageWrapper}
+
+                  style={
+
+                    styles.section
+
+                  }
+
                 >
 
                   <View
+
+                    style={
+
+                      styles.sectionHeader
+
+                    }
+
+                  >
+
+                    <View
+
+                      style={
+
+                        styles.sectionTitleRow
+
+                      }
+
+                    >
+
+                      <Sparkles
+
+                        size={14}
+
+                        color={
+
+                          t.primary
+
+                        }
+
+                      />
+
+
+
+                      <Text
+
+                        style={[
+
+                          styles.sectionTitle,
+
+                          {
+
+                            color:
+
+                              t.text,
+
+                          },
+
+                        ]}
+
+                      >
+
+                        Up next
+
+                      </Text>
+
+                    </View>
+
+                  </View>
+
+
+
+
+
+                  <View
+
                     style={[
-                      styles.messageBubble,
+
+                      styles.suggestedCard,
+
                       {
+
                         backgroundColor:
-                          msg.role === 'user'
-                            ? t.primary
-                            : t.surface2,
+
+                          t.surface,
+
+                        borderColor:
+
+                          `${t.primary}45`,
+
                       },
+
                     ]}
+
+                  >
+
+
+
+                    {/* Top row */}
+
+
+
+                    <View
+
+                      style={
+
+                        styles.suggestedTopRow
+
+                      }
+
+                    >
+
+                      <View
+
+                        style={[
+
+                          styles.reasonBadge,
+
+                          {
+
+                            backgroundColor:
+
+                              t.dueBg,
+
+                          },
+
+                        ]}
+
+                      >
+
+                        <Text
+
+                          style={[
+
+                            styles.reasonText,
+
+                            {
+
+                              color:
+
+                                t.due,
+
+                            },
+
+                          ]}
+
+                        >
+
+                          {reasonLabel(upNext.reason)}
+
+                        </Text>
+
+                      </View>
+
+
+
+                      <Text
+
+                        style={[
+
+                          styles.sectionName,
+
+                          {
+
+                            color:
+
+                              t.muted,
+
+                          },
+
+                        ]}
+
+                      >
+
+                        {
+
+                          upNext.section
+
+                        }
+
+                      </Text>
+
+                    </View>
+
+
+
+
+
+                    {/* Task title */}
+
+
+
+                    <Pressable
+
+                      onPress={() =>
+
+                        router.push({
+
+                          pathname:
+
+                            '/task-details',
+
+                          params: {
+
+                            id:
+
+                              upNext.id,
+
+                            section:
+
+                              upNext.section,
+
+                          },
+
+                        })
+
+                      }
+
+                      style={({ pressed }) => [
+
+                        styles.suggestedTaskButton,
+
+                        pressed &&
+
+                          styles.pressed,
+
+                      ]}
+
+                    >
+
+                      <Text
+
+                        numberOfLines={
+
+                          2
+
+                        }
+
+                        style={[
+
+                          styles.suggestedTitle,
+
+                          {
+
+                            color:
+
+                              t.text,
+
+                          },
+
+                        ]}
+
+                      >
+
+                        {
+
+                          upNext.title
+
+                        }
+
+                      </Text>
+
+
+
+                      <Text
+
+                        style={[
+
+                          styles.suggestedDeadline,
+
+                          {
+
+                            color:
+
+                              t.muted,
+
+                          },
+
+                        ]}
+
+                      >
+
+                        {whenLabel(upNext)}
+
+                      </Text>
+
+                    </Pressable>
+
+
+
+
+
+                    {/* Actions */}
+
+
+
+                    <View
+
+                      style={
+
+                        styles.actionRow
+
+                      }
+
+                    >
+
+                      <Pressable
+
+                        onPress={() => handleComplete(upNext.id)}
+
+                        style={({ pressed }) => [
+
+                          styles.primaryAction,
+
+                          {
+
+                            backgroundColor:
+
+                              t.primary,
+
+                          },
+
+                          pressed &&
+
+                            styles.pressed,
+
+                        ]}
+
+                      >
+
+                        <Check
+
+                          size={14}
+
+                          color="#FFFFFF"
+
+                        />
+
+
+
+                        <Text
+
+                          style={
+
+                            styles.primaryActionText
+
+                          }
+
+                        >
+
+                          Complete
+
+                        </Text>
+
+                      </Pressable>
+
+
+
+
+
+                      <Pressable
+
+                        onPress={showSomethingElse}
+
+                        disabled={candidates.length < 2}
+
+                        style={({ pressed }) => [
+
+                          styles.secondaryAction,
+
+                          {
+
+                            backgroundColor:
+
+                              t.surface2,
+
+                            borderColor:
+
+                              t.border,
+
+                          },
+
+                          pressed &&
+
+                            styles.pressed,
+
+                        ]}
+
+                      >
+
+                        <Text
+
+                          style={[
+
+                            styles.secondaryActionText,
+
+                            {
+
+                              color:
+
+                                t.text,
+
+                            },
+
+                          ]}
+
+                        >
+
+                          Something else
+
+                        </Text>
+
+                      </Pressable>
+
+                    </View>
+
+
+
+
+
+                    {/* Energy */}
+
+
+
+                    <View
+
+                      style={
+
+                        styles.energyRow
+
+                      }
+
+                    >
+
+                      {energyOptions.map(
+
+                        (option) => {
+
+                          const selected =
+
+                            energy ===
+
+                            option.value
+
+
+
+                          return (
+
+                            <Pressable
+
+                              key={
+
+                                option.value
+
+                              }
+
+                              onPress={() =>
+
+                                toggleEnergy(
+
+                                  option.value
+
+                                )
+
+                              }
+
+                              style={({ pressed }) => [
+
+                                styles.energyChip,
+
+                                {
+
+                                  backgroundColor:
+
+                                    selected
+
+                                      ? t.primary
+
+                                      : t.surface2,
+
+                                  borderColor:
+
+                                    selected
+
+                                      ? t.primary
+
+                                      : t.border,
+
+                                },
+
+                                pressed &&
+
+                                  styles.pressed,
+
+                              ]}
+
+                            >
+
+                              <Text
+
+                                style={[
+
+                                  styles.energyText,
+
+                                  {
+
+                                    color:
+
+                                      selected
+
+                                        ? '#FFFFFF'
+
+                                        : t.muted,
+
+                                  },
+
+                                ]}
+
+                              >
+
+                                {
+
+                                  option.label
+
+                                }
+
+                              </Text>
+
+                            </Pressable>
+
+                          )
+
+                        }
+
+                      )}
+
+                    </View>
+
+
+
+                  </View>
+
+                </View>
+
+              )}
+
+
+
+
+
+              {/* ==================================================
+
+                  OVERDUE
+
+              ================================================== */}
+
+
+
+              {overdueTasks.length >
+
+                0 && (
+
+                <View
+
+                  style={
+
+                    styles.section
+
+                  }
+
+                >
+
+                  <View
+
+                    style={
+
+                      styles.sectionHeader
+
+                    }
+
+                  >
+
+                    <View
+
+                      style={
+
+                        styles.sectionTitleRow
+
+                      }
+
+                    >
+
+                      <AlertTriangle
+
+                        size={14}
+
+                        color={t.risk}
+
+                      />
+
+
+
+                      <Text
+
+                        style={[
+
+                          styles.sectionTitle,
+
+                          {
+
+                            color:
+
+                              t.text,
+
+                          },
+
+                        ]}
+
+                      >
+
+                        Overdue
+
+                      </Text>
+
+                    </View>
+
+
+
+                    <View
+
+                      style={[
+
+                        styles.overdueBadge,
+
+                        {
+
+                          backgroundColor:
+
+                            t.riskBg,
+
+                        },
+
+                      ]}
+
+                    >
+
+                      <Text
+
+                        style={[
+
+                          styles.overdueBadgeText,
+
+                          {
+
+                            color:
+
+                              t.risk,
+
+                          },
+
+                        ]}
+
+                      >
+
+                        {
+
+                          overdueTasks.length
+
+                        } overdue
+
+                      </Text>
+
+                    </View>
+
+                  </View>
+
+
+
+
+
+                  {overdueTasks.slice(0, 2).map((task) => (
+                  <OverdueRow
+                    key={task.id}
+                    task={task}
+                    when={whenLabel(task)}
+                    onOpen={() =>
+                      router.push({
+                        pathname: '/task-details',
+                        params: { id: task.id, section: task.section },
+                      })
+                    }
+                    onComplete={() => handleComplete(task.id)}
+                    onReschedule={() => reschedule(task.title)}
+                    t={t}
+                  />
+                ))}
+
+                {overdueTasks.length > 2 && (
+                  <Pressable onPress={() => router.push(OVERDUE_ROUTE)}>
+                    <Text style={{ color: t.risk, fontSize: 12, marginTop: 8 }}>
+                      See all {overdueTasks.length} overdue
+                    </Text>
+                  </Pressable>
+                )}
+              </View>
+            )}
+
+            {/* ==================================================
+                ALL TASKS
+              ================================================== */}
+
+
+
+              {visibleTasks.length >
+
+                0 && (
+
+                <View
+
+                  style={
+
+                    styles.section
+
+                  }
+
+                >
+
+                  <View
+
+                    style={
+
+                      styles.sectionHeader
+
+                    }
+
                   >
 
                     <Text
+
                       style={[
-                        styles.messageText,
+
+                        styles.sectionTitle,
+
                         {
+
                           color:
-                            msg.role === 'user'
-                              ? '#FFFFFF'
-                              : t.text,
+
+                            t.text,
+
                         },
+
                       ]}
+
                     >
-                      {msg.text}
+
+                      Next up
+
+                    </Text>
+
+
+
+                    <Text
+
+                      style={[
+
+                        styles.taskCount,
+
+                        {
+
+                          color:
+
+                            t.muted,
+
+                        },
+
+                      ]}
+
+                    >
+
+                      Top{' '}
+
+                      {Math.min(
+
+                        4,
+
+                        visibleTasks.length
+
+                      )}{' '}
+
+                      of{' '}
+
+                      {
+
+                        visibleTasks.length
+
+                      }
+
                     </Text>
 
                   </View>
 
 
-                  {/* TASK REFERENCE */}
 
-                  {msg.taskRef && (
-                    <Pressable
-                      onPress={() =>
-                        router.push({
-                          pathname:
-                            '../components/TaskDetail',
-                          params: {
-                            taskId:
-                              msg.taskRef!.id,
-                          },
-                        })
-                      }
-                      style={[
-                        styles.taskReference,
-                        {
-                          backgroundColor:
-                            t.surface,
-                          borderColor:
-                            t.border,
-                        },
-                      ]}
-                    >
 
-                      <View
-                        style={
-                          styles.taskReferenceTop
-                        }
-                      >
 
-                        <Text
-                          numberOfLines={1}
-                          style={[
-                            styles.taskReferenceTitle,
-                            {
-                              color: t.text,
-                            },
-                          ]}
-                        >
-                          {msg.taskRef.title}
-                        </Text>
+                  <View
 
-                        <ChevronRight
-                          size={13}
-                          color={t.muted}
-                        />
+                    style={[
 
-                      </View>
+                      styles.taskList,
 
-                      <Text
-                        style={[
-                          styles.taskReferenceDeadline,
-                          {
-                            color: t.muted,
-                          },
-                        ]}
-                      >
-                        {msg.taskRef.deadline}
-                      </Text>
+                      {
 
-                    </Pressable>
-                  )}
+                        backgroundColor:
+
+                          t.surface,
+
+                        borderColor:
+
+                          t.border,
+
+                      },
+
+                    ]}
+
+                  >
+
+                    {visibleTasks
+
+                      .slice(0, 4)
+
+                      .map(
+
+                        (
+
+                          task,
+
+                          index
+
+                        ) => (
+
+                          <CompactTaskRow
+
+                            key={
+
+                              task.id
+
+                            }
+
+                            task={
+
+                              task
+
+                            }
+
+                            showDivider={
+
+                              index > 0
+
+                            }
+
+                            onOpen={() =>
+
+                              router.push({
+
+                                pathname:
+
+                                  '/task-details',
+
+                                params: {
+
+                                  id:
+
+                                    task.id,
+
+                                  section:
+
+                                    task.section,
+
+                                },
+
+                              })
+
+                            }
+
+                            onComplete={() =>
+
+                              handleComplete(task.id)
+
+                            }
+
+                            t={t}
+
+                          />
+
+                        )
+
+                      )}
+
+                  </View>
 
                 </View>
 
-              </View>
-
-            ))}
-
-          </ScrollView>
-
-
-          {/* ================================ */}
-          {/* SUGGESTIONS */}
-          {/* ================================ */}
-
-          {!chatActive && (
-            <View
-              style={styles.suggestionsContainer}
-            >
-
-              {chatSuggestions.map(
-                (suggestion) => (
-
-                  <Pressable
-                    key={suggestion}
-                    onPress={() =>
-                      sendMessage(suggestion)
-                    }
-                    style={({ pressed }) => [
-                      styles.suggestionChip,
-                      {
-                        backgroundColor:
-                          t.surface2,
-                        borderColor:
-                          t.border,
-                      },
-                      pressed &&
-                        styles.pressed,
-                    ]}
-                  >
-
-                    <Text
-                      style={[
-                        styles.suggestionText,
-                        {
-                          color: t.text,
-                        },
-                      ]}
-                    >
-                      {suggestion}
-                    </Text>
-
-                  </Pressable>
-
-                )
               )}
 
-            </View>
+
+
+            </>
+
           )}
 
 
-          {/* ================================ */}
-          {/* INPUT */}
-          {/* ================================ */}
 
-          <View
-            style={[
-              styles.inputContainer,
-              {
-                borderTopColor: t.border,
-              },
-            ]}
-          >
-
-            <TextInput
-              value={chatInput}
-              onChangeText={setChatInput}
-              onSubmitEditing={() =>
-                sendMessage(chatInput)
-              }
-              returnKeyType="send"
-              placeholder="Ask anything about your tasks…"
-              placeholderTextColor={t.muted}
-              style={[
-                styles.chatInput,
-                {
-                  backgroundColor: t.surface2,
-                  color: t.text,
-                },
-              ]}
-            />
-
-            <Pressable
-              onPress={() =>
-                sendMessage(chatInput)
-              }disabled={sending}
-              style={({ pressed }) => [
-                styles.sendButton,
-                {
-                  backgroundColor:
-                    chatInput.trim()
-                      ? t.primary
-                      : t.surface2,
-                },
-                pressed && styles.pressed,
-              ]}
-            >
-
-              <Send
-                size={16}
-                color={
-                  chatInput.trim()
-                    ? '#FFFFFF'
-                    : t.muted
-                }
-              />
-
-            </Pressable>
-
-          </View>
-
-        </ChatWrapper>
+        </ScrollView>
 
       </SafeAreaView>
 
 
-      {/* ================================ */}
-      {/* BOTTOM NAVIGATION */}
-      {/* ================================ */}
 
-      {!chatActive && <BottomTabBar />}
-      {!chatActive && <FAB />}
 
-    </KeyboardAvoidingView>
+
+      {/* ========================================================
+
+          EXISTING NAVIGATION / FAB
+
+          ======================================================== */}
+
+
+
+      <BottomTabBar />
+
+      <FAB />
+
+
+
+    </View>
+
   )
+
 }
 
 
-/* ========================================= */
-/* STYLES */
-/* ========================================= */
+
+
+
+// ============================================================
+
+// OVERDUE ROW
+
+// ============================================================
+
+
+
+function OverdueRow({
+
+  task,
+
+  when,
+
+  onOpen,
+
+  onComplete,
+
+  onReschedule,
+
+  t,
+
+}: {
+
+  task: Task
+
+  when: string
+
+  onOpen: () => void
+
+  onComplete: () => void
+
+  onReschedule: () => void
+
+  t: any
+
+}) {
+
+  return (
+
+    <View
+
+      style={[
+
+        styles.overdueRow,
+
+        {
+
+          backgroundColor:
+
+            t.riskBg,
+
+          borderColor:
+
+            `${t.risk}45`,
+
+        },
+
+      ]}
+
+    >
+
+      <Pressable
+
+        onPress={onOpen}
+
+        style={({ pressed }) => [
+
+          styles.overdueTaskButton,
+
+          pressed &&
+
+            styles.pressed,
+
+        ]}
+
+      >
+
+        <Text
+
+          numberOfLines={1}
+
+          style={[
+
+            styles.overdueTitle,
+
+            {
+
+              color:
+
+                t.text,
+
+            },
+
+          ]}
+
+        >
+
+          {task.title}
+
+        </Text>
+
+
+
+        <Text
+
+          style={[
+
+            styles.overdueSubtitle,
+
+            {
+
+              color:
+
+                t.risk,
+
+            },
+
+          ]}
+
+        >
+
+          {recurrenceLabel(task)
+            ? `${when} · ${recurrenceLabel(task)}`
+            : when}
+
+        </Text>
+
+      </Pressable>
+
+
+
+
+
+      <Pressable
+
+        onPress={onReschedule}
+
+        style={({ pressed }) => [
+
+          styles.rescheduleButton,
+
+          {
+
+            backgroundColor:
+
+              t.surface,
+
+          },
+
+          pressed &&
+
+            styles.pressed,
+
+        ]}
+
+      >
+
+        <Text
+
+          style={[
+
+            styles.rescheduleText,
+
+            {
+
+              color:
+
+                t.risk,
+
+            },
+
+          ]}
+
+        >
+
+          Reschedule
+
+        </Text>
+
+      </Pressable>
+
+
+
+
+
+      <Pressable
+
+        onPress={onComplete}
+
+        accessibilityLabel={`Complete ${task.title}`}
+
+        style={({ pressed }) => [
+
+          styles.completeSmallButton,
+
+          {
+
+            backgroundColor:
+
+              t.surface,
+
+          },
+
+          pressed &&
+
+            styles.pressed,
+
+        ]}
+
+      >
+
+        <Check
+
+          size={13}
+
+          color={t.success}
+
+        />
+
+      </Pressable>
+
+    </View>
+
+  )
+
+}
+
+
+
+
+
+// ============================================================
+
+// COMPACT TASK ROW
+
+// ============================================================
+
+
+
+function CompactTaskRow({
+
+  task,
+
+  showDivider,
+
+  onOpen,
+
+  onComplete,
+
+  t,
+
+}: {
+
+  task: Task
+
+  showDivider: boolean
+
+  onOpen: () => void
+
+  onComplete: () => void
+
+  t: any
+
+}) {
+
+  return (
+
+    <View
+
+      style={[
+
+        styles.taskRow,
+
+        showDivider && {
+
+          borderTopWidth: 1,
+
+          borderTopColor:
+
+            t.border,
+
+        },
+
+      ]}
+
+    >
+
+      <Pressable
+
+        onPress={onComplete}
+
+        accessibilityLabel={`Complete ${task.title}`}
+
+        style={({ pressed }) => [
+
+          styles.checkbox,
+
+          {
+
+            backgroundColor:
+
+              t.surface2,
+
+            borderColor:
+
+              t.border,
+
+          },
+
+          pressed &&
+
+            styles.pressed,
+
+        ]}
+
+      >
+
+        <Check
+
+          size={11}
+
+          color={t.muted}
+
+        />
+
+      </Pressable>
+
+
+
+
+
+      <Pressable
+
+        onPress={onOpen}
+
+        style={({ pressed }) => [
+
+          styles.taskOpenButton,
+
+          pressed &&
+
+            styles.pressed,
+
+        ]}
+
+      >
+
+        <View
+
+          style={
+
+            styles.taskTextContainer
+
+          }
+
+        >
+
+          <Text
+
+            numberOfLines={1}
+
+            style={[
+
+              styles.taskTitle,
+
+              {
+
+                color:
+
+                  t.text,
+
+              },
+
+            ]}
+
+          >
+
+            {task.title}
+
+          </Text>
+
+
+
+          <Text
+
+            style={[
+
+              styles.taskSection,
+
+              {
+
+                color:
+
+                  t.muted,
+
+              },
+
+            ]}
+
+          >
+
+            {recurrenceLabel(task)
+              ? `${task.section} · ${recurrenceLabel(task)}`
+              : task.section}
+
+          </Text>
+
+        </View>
+
+
+
+        <ChevronRight
+
+          size={14}
+
+          color={t.muted}
+
+        />
+
+      </Pressable>
+
+    </View>
+
+  )
+
+}
+
+
+
+
+
+// ============================================================
+
+// STYLES
+
+// ============================================================
+
+
 
 const styles = StyleSheet.create({
 
   container: {
+
     flex: 1,
+
   },
 
-  /*
-   * This is the important part.
-   * Everything above the bottom nav lives
-   * inside this flex container.
-   */
-  mainContent: {
+
+
+  safeArea: {
+
     flex: 1,
+
+  },
+
+
+
+  scrollContent: {
+
     paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 8,
+
+    paddingTop: 8,
+
   },
 
 
-  /* ================================ */
-  /* HEADER */
-  /* ================================ */
+
+
+
+  // ==========================================================
+
+  // HEADER
+
+  // ==========================================================
+
+
 
   header: {
+
     flexDirection: 'row',
+
     alignItems: 'flex-start',
-    justifyContent: 'space-between',
+
+    justifyContent:
+
+      'space-between',
+
     marginBottom: 16,
+
   },
+
+
 
   headerTextContainer: {
+
     flex: 1,
+
   },
+
+
 
   greeting: {
-    fontSize: 22,
+
+    fontSize: 21,
+
     fontWeight: '700',
-    fontFamily: 'DM Serif Display',
+
+    fontFamily:
+
+      'DM Serif Display',
+
   },
+
+
 
   date: {
-    fontSize: 13,
+
+    fontSize: 11.5,
+
     marginTop: 2,
+
     fontFamily: 'Outfit',
+
   },
+
+
 
   profileButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+
+    width: 36,
+
+    height: 36,
+
+    borderRadius: 18,
+
     alignItems: 'center',
-    justifyContent: 'center',
+
+    justifyContent:
+
+      'center',
+
     borderWidth: 1,
+
   },
 
 
-  /* ================================ */
-  /* DAILY DIGEST */
-  /* ================================ */
+
+
+
+  // ==========================================================
+
+  // DAILY DIGEST
+
+  // ==========================================================
+
+
 
   digestCard: {
+
     width: '100%',
 
+    minHeight: 62,
+
     flexDirection: 'row',
+
     alignItems: 'center',
-    justifyContent: 'space-between',
+
+    justifyContent:
+
+      'space-between',
 
     paddingHorizontal: 16,
+
     paddingVertical: 14,
 
     borderRadius: 16,
+
     borderWidth: 1,
 
     marginBottom: 16,
+
   },
+
+
 
   digestContent: {
+
     flexDirection: 'row',
+
     alignItems: 'center',
+
   },
+
+
 
   digestItem: {
+
     flexDirection: 'row',
+
     alignItems: 'center',
+
   },
+
+
 
   statusDot: {
+
     width: 8,
+
     height: 8,
+
     borderRadius: 4,
+
     marginRight: 6,
+
   },
+
+
 
   digestText: {
+
     fontSize: 13,
+
     fontWeight: '500',
+
+    fontFamily: 'Outfit',
+
   },
+
+
 
   digestNumber: {
+
     fontWeight: '700',
+
   },
+
+
 
   digestDivider: {
+
     width: 1,
+
     height: 16,
+
     marginHorizontal: 16,
+
   },
 
 
-  /* ================================ */
-  /* SUGGESTED FOCUS */
-  /* ================================ */
-
-  suggestedCard: {
-    width: '100%',
-
-    padding: 16,
-
-    borderRadius: 16,
-    borderWidth: 1.5,
-
-    marginBottom: 16,
-  },
-
-  suggestedHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-
-  suggestedLabel: {
-    marginLeft: 6,
-    fontSize: 11,
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-  },
-
-  suggestedTitle: {
-    fontSize: 15,
-    fontWeight: '600',
-    lineHeight: 20,
-    marginBottom: 6,
-  },
-
-  suggestedFooter: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-
-  deadline: {
-    fontSize: 12,
-  },
-
-  openText: {
-    fontSize: 12,
-    fontWeight: '500',
-  },
 
 
-  /* ================================ */
-  /* AI CARD */
-  /* ================================ */
 
-  aiCard: {
-    flex: 1,
+  // ==========================================================
 
-    width: '100%',
+  // EMPTY
+
+  // ==========================================================
+
+
+
+  emptyCard: {
 
     borderRadius: 18,
+
     borderWidth: 1,
 
-    overflow: 'hidden',
-
-    /*
-     * This is what makes the assistant
-     * consume the remaining screen.
-     */
-    minHeight: 0,
-  },
-
-
-  /* ================================ */
-  /* AI HEADER */
-  /* ================================ */
-
-  aiHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-
-    paddingHorizontal: 16,
-    paddingTop: 14,
-    paddingBottom: 12,
-
-    borderBottomWidth: 1,
-  },
-
-  aiHeaderLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-
-  aiIcon: {
-    width: 30,
-    height: 30,
-
-    borderRadius: 15,
+    padding: 24,
 
     alignItems: 'center',
-    justifyContent: 'center',
 
-    marginRight: 9,
+    marginBottom: 16,
+
   },
 
-  aiTitle: {
-    fontSize: 14,
+
+
+  emptyTitle: {
+
+    fontSize: 16,
+
     fontWeight: '600',
-  },
 
-  onlineContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
+    marginTop: 10,
 
-  onlineDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    marginRight: 6,
-  },
-
-  onlineText: {
-    fontSize: 12,
-  },
-
-
-  /* ================================ */
-  /* MESSAGE AREA */
-  /* ================================ */
-
-  messagesScroll: {
-    flex: 1,
-    minHeight: 0,
-  },
-
-  messagesContainer: {
-    paddingHorizontal: 16,
-    paddingTop: 16,
-    paddingBottom: 16,
-  },
-
-  messageRow: {
-    width: '100%',
-    marginBottom: 12,
-  },
-
-  aiMessageRow: {
-    alignItems: 'flex-start',
-  },
-
-  userMessageRow: {
-    alignItems: 'flex-end',
-  },
-
-  messageWrapper: {
-    maxWidth: '85%',
-  },
-
-  messageBubble: {
-    borderRadius: 17,
-
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-  },
-
-  messageText: {
-    fontSize: 13.5,
-    lineHeight: 20,
     fontFamily: 'Outfit',
-  },
-aiCardFullScreen: {
-  position: 'absolute',
-  top: 0,
-  left: 0,
-  right: 0,
-  bottom: 0,
-  zIndex: 999,
-  borderRadius: 0,
-  borderWidth: 0,
-},
 
-chatBackButton: {
-  marginRight: 10,
-  padding: 4,
-},
-
-chatBackText: {
-  fontSize: 28,
-  lineHeight: 30,
-},
-
-  /* ================================ */
-  /* TASK REFERENCE */
-  /* ================================ */
-
-  taskReference: {
-    width: '100%',
-
-    marginTop: 6,
-
-    borderRadius: 12,
-
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-
-    borderWidth: 1,
   },
 
-  taskReferenceTop: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+
+
+  emptySubtitle: {
+
+    fontSize: 12,
+
+    textAlign: 'center',
+
+    lineHeight: 18,
+
+    marginTop: 5,
+
+    marginBottom: 14,
+
+    fontFamily: 'Outfit',
+
   },
 
-  taskReferenceTitle: {
-    flex: 1,
+
+
+  emptyButton: {
+
+    borderRadius: 999,
+
+    paddingHorizontal: 18,
+
+    paddingVertical: 11,
+
+  },
+
+
+
+  emptyButtonText: {
+
+    color: '#FFFFFF',
 
     fontSize: 12.5,
-    fontWeight: '500',
 
-    marginRight: 6,
-  },
+    fontWeight: '600',
 
-  taskReferenceDeadline: {
-    fontSize: 11.5,
-    marginTop: 2,
+    fontFamily: 'Outfit',
+
   },
 
 
-  /* ================================ */
-  /* SUGGESTIONS */
-  /* ================================ */
 
-  suggestionsContainer: {
+
+
+  // ==========================================================
+
+  // SECTION
+
+  // ==========================================================
+
+
+
+  section: {
+
+    marginBottom: 16,
+
+  },
+
+
+
+  sectionHeader: {
+
     flexDirection: 'row',
-    flexWrap: 'wrap',
 
-    paddingHorizontal: 16,
-    paddingBottom: 10,
+    alignItems: 'center',
+
+    justifyContent:
+
+      'space-between',
+
+    marginBottom: 7,
+
+  },
+
+
+
+  sectionTitleRow: {
+
+    flexDirection: 'row',
+
+    alignItems: 'center',
+
+    gap: 6,
+
+  },
+
+
+
+  sectionTitle: {
+
+    fontSize: 14.5,
+
+    fontFamily:
+
+      'DM Serif Display',
+
+  },
+
+
+
+  taskCount: {
+
+    fontSize: 10.5,
+
+    fontFamily: 'Outfit',
+
+  },
+
+
+
+
+
+  // ==========================================================
+
+  // SUGGESTED
+
+  // ==========================================================
+
+
+
+  suggestedCard: {
+
+    width: '100%',
+
+    padding: 14,
+
+    borderRadius: 17,
+
+    borderWidth: 1.5,
+
+  },
+
+
+
+  suggestedTopRow: {
+
+    flexDirection: 'row',
+
+    alignItems: 'center',
+
+    justifyContent:
+
+      'space-between',
+
+    marginBottom: 9,
+
+  },
+
+
+
+  reasonBadge: {
+
+    borderRadius: 999,
+
+    paddingHorizontal: 9,
+
+    paddingVertical: 4,
+
+  },
+
+
+
+  reasonText: {
+
+    fontSize: 10.5,
+
+    fontWeight: '600',
+
+    fontFamily: 'Outfit',
+
+  },
+
+
+
+  sectionName: {
+
+    fontSize: 10.5,
+
+    textTransform:
+
+      'capitalize',
+
+    fontFamily: 'Outfit',
+
+  },
+
+
+
+  suggestedTaskButton: {
+
+    width: '100%',
+
+  },
+
+
+
+  suggestedTitle: {
+
+    fontSize: 17,
+
+    lineHeight: 22,
+
+    fontWeight: '600',
+
+    fontFamily: 'Outfit',
+
+  },
+
+
+
+  suggestedDeadline: {
+
+    fontSize: 11.5,
+
+    marginTop: 5,
+
+    fontFamily: 'Outfit',
+
+  },
+
+
+
+
+
+  // ==========================================================
+
+  // ACTIONS
+
+  // ==========================================================
+
+
+
+  actionRow: {
+
+    flexDirection: 'row',
 
     gap: 8,
+
+    marginTop: 13,
+
   },
 
-  suggestionChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+
+
+  primaryAction: {
+
+    flex: 1,
+
+    minHeight: 38,
+
+    borderRadius: 10,
+
+    flexDirection: 'row',
+
+    alignItems: 'center',
+
+    justifyContent:
+
+      'center',
+
+    gap: 6,
+
+  },
+
+
+
+  primaryActionText: {
+
+    color: '#FFFFFF',
+
+    fontSize: 11.5,
+
+    fontWeight: '600',
+
+    fontFamily: 'Outfit',
+
+  },
+
+
+
+  secondaryAction: {
+
+    flex: 1,
+
+    minHeight: 38,
+
+    borderRadius: 10,
+
+    borderWidth: 1,
+
+    alignItems: 'center',
+
+    justifyContent:
+
+      'center',
+
+  },
+
+
+
+  secondaryActionText: {
+
+    fontSize: 11.5,
+
+    fontWeight: '500',
+
+    fontFamily: 'Outfit',
+
+  },
+
+
+
+
+
+  // ==========================================================
+
+  // ENERGY
+
+  // ==========================================================
+
+
+
+  energyRow: {
+
+    flexDirection: 'row',
+
+    gap: 6,
+
+    marginTop: 9,
+
+  },
+
+
+
+  energyChip: {
+
+    flex: 1,
 
     borderRadius: 999,
 
     borderWidth: 1,
-  },
 
-  suggestionText: {
-    fontSize: 12,
-    fontFamily: 'Outfit',
-  },
+    paddingVertical: 7,
 
-
-  /* ================================ */
-  /* INPUT */
-  /* ================================ */
-
-  inputContainer: {
-    flexDirection: 'row',
     alignItems: 'center',
 
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    justifyContent:
 
-    gap: 8,
+      'center',
 
-    borderTopWidth: 1,
   },
 
-  chatInput: {
+
+
+  energyText: {
+
+    fontSize: 10,
+
+    fontWeight: '500',
+
+    fontFamily: 'Outfit',
+
+  },
+
+
+
+
+
+  // ==========================================================
+
+  // OVERDUE
+
+  // ==========================================================
+
+
+
+  overdueBadge: {
+
+    borderRadius: 999,
+
+    paddingHorizontal: 8,
+
+    paddingVertical: 4,
+
+  },
+
+
+
+  overdueBadgeText: {
+
+    fontSize: 10,
+
+    fontWeight: '600',
+
+    fontFamily: 'Outfit',
+
+  },
+
+
+
+  overdueRow: {
+
+    flexDirection: 'row',
+
+    alignItems: 'center',
+
+    gap: 7,
+
+    padding: 10,
+
+    borderRadius: 17,
+
+    borderWidth: 1,
+
+  },
+
+
+
+  overdueTaskButton: {
+
     flex: 1,
 
-    height: 42,
+    minWidth: 0,
 
-    borderRadius: 12,
-
-    paddingHorizontal: 13,
-    paddingVertical: 8,
-
-    fontSize: 13.5,
-    fontFamily: 'Outfit',
   },
 
-  sendButton: {
-    width: 38,
-    height: 38,
 
-    borderRadius: 12,
+
+  overdueTitle: {
+
+    fontSize: 12.5,
+
+    fontWeight: '600',
+
+    fontFamily: 'Outfit',
+
+  },
+
+
+
+  overdueSubtitle: {
+
+    fontSize: 9.5,
+
+    marginTop: 2,
+
+    fontFamily: 'Outfit',
+
+  },
+
+
+
+  rescheduleButton: {
+
+    borderRadius: 9,
+
+    paddingHorizontal: 10,
+
+    paddingVertical: 7,
+
+  },
+
+
+
+  rescheduleText: {
+
+    fontSize: 10,
+
+    fontWeight: '600',
+
+    fontFamily: 'Outfit',
+
+  },
+
+
+
+  completeSmallButton: {
+
+    width: 30,
+
+    height: 30,
+
+    borderRadius: 9,
 
     alignItems: 'center',
-    justifyContent: 'center',
+
+    justifyContent:
+
+      'center',
+
   },
 
 
-  /* ================================ */
-  /* PRESS */
-  /* ================================ */
+
+
+
+  // ==========================================================
+
+  // TASK LIST
+
+  // ==========================================================
+
+
+
+  taskList: {
+
+    overflow: 'hidden',
+
+    borderRadius: 17,
+
+    borderWidth: 1,
+
+  },
+
+
+
+  taskRow: {
+
+    flexDirection: 'row',
+
+    alignItems: 'center',
+
+    gap: 10,
+
+    paddingHorizontal: 12,
+
+    paddingVertical: 10,
+
+  },
+
+
+
+  checkbox: {
+
+    width: 25,
+
+    height: 25,
+
+    borderRadius: 13,
+
+    borderWidth: 1.5,
+
+    alignItems: 'center',
+
+    justifyContent:
+
+      'center',
+
+  },
+
+
+
+  taskOpenButton: {
+
+    flex: 1,
+
+    minWidth: 0,
+
+    flexDirection: 'row',
+
+    alignItems: 'center',
+
+  },
+
+
+
+  taskTextContainer: {
+
+    flex: 1,
+
+    minWidth: 0,
+
+  },
+
+
+
+  taskTitle: {
+
+    fontSize: 12.5,
+
+    fontWeight: '500',
+
+    fontFamily: 'Outfit',
+
+  },
+
+
+
+  taskSection: {
+
+    fontSize: 9.5,
+
+    textTransform:
+
+      'capitalize',
+
+    marginTop: 1,
+
+    fontFamily: 'Outfit',
+
+  },
+
+
+
+
+
+  // ==========================================================
+
+  // PRESS
+
+  // ==========================================================
+
+
 
   pressed: {
+
     opacity: 0.7,
+
   },
 
 })
