@@ -240,4 +240,3 @@ class ChatRequest(BaseModel):
 def agent_chat(req: ChatRequest, user_id: str = Depends(get_current_user)):
     reply, tasks_changed = run_agent(user_id, req.messages)
     return {"reply": reply, "tasks_changed": tasks_changed}
-

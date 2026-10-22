@@ -1,29 +1,3 @@
-"""
-JT-C6 recommendation engine.
-
-Pure functions only: no database, no clock. `now` is always passed in so the
-engine is deterministic and testable.
-
-All datetimes are compared as LOCAL wall-clock values (app timezone, see
-timeutil.py): stored timestamps are converted to the local timezone and then
-made naive, and `now` must be a naive datetime showing the local wall clock.
-
-Pipeline
-  0. eligibility   : drop completed / dropped / is_blocked tasks, overdue ones (due time
-                     already passed), vague windows that have not started or already ended,
-                     and explicitly scheduled tasks outside their dominance window
-  1. dominant      : an explicitly scheduled task is dominant from 8 minutes before to
-                     8 minutes after its scheduled_start (both ends included). It is always
-                     the main recommendation and ignores urgency / slack / effort / mood.
-                     (Flexible tasks with an exact deadline keep the same +/- 8 minute pin.)
-  2. at-risk       : slack <= AT_RISK_SLACK_HOURS (negative slack included)
-  3. everything else: score = slack / urgency weight, lower = sooner
-  Ties (within TIE_EPS of score) are broken by section, then by older created_at.
-
-Blocked tasks: `is_blocked` is set by the user only. The engine never blocks or
-unblocks anything; it just treats is_blocked = true as not eligible.
-"""
-
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -458,32 +432,6 @@ def build_dashboard(
     now: datetime,
     energy: Optional[str] = None,
 ) -> dict:
-    """
-    Build the complete dashboard from the same recommendation engine.
-
-    Every task is in exactly one of these three groups:
-      - eligible now : ranked (= pinned + at_risk + later, in rank() order)
-      - overdue      : its due time has passed and it is no longer eligible
-      - upcoming     : not eligible yet (window not started / meeting not near).
-                       Shown in sections only, never recommended.
-
-    Returns:
-      - focus      : the single main recommendation (no energy / mood), or None
-      - suggested  : rank() picks (energy-aware)
-      - ranked     : all eligible tasks in the same order rank() uses
-      - overdue
-      - upcoming   : sorted by time, nearest first; blocked tasks are included here
-                     (flagged is_blocked) so the sections can still list them
-      - next_upcoming          : nearest non-blocked upcoming task, or None
-      - next_upcoming_explicit : nearest non-blocked upcoming task with an exact time, or None
-      - later      : the part of ranked that is neither pinned nor at risk
-                     (a subset of ranked, kept for counts only)
-      - due_today  : eligible tasks that have a time today (subset of ranked)
-      - at_risk    : subset of ranked
-      - counts
-
-    All lists use the same public task shape (see _present).
-    """
 
     active_entries = []
 
