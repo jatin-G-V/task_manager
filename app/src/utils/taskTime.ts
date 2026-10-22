@@ -23,9 +23,6 @@ export function parseInstant(iso?: string | null): Date | null {
   return isNaN(d.getTime()) ? null : d
 }
 
-// Old name, kept so existing imports keep working.
-export const parseWall = parseInstant
-
 const sameDay = (a: Date, b: Date) =>
   a.getFullYear() === b.getFullYear() &&
   a.getMonth() === b.getMonth() &&

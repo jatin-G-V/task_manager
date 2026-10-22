@@ -34,42 +34,42 @@ export default function SignupScreen() {
 
   async function handleSignup() {
     setLoading(true)
-
-    const { data, error } =
-      await supabase.auth.signUp({
-        email,
-        password,
-      })
-
-    if (error) {
-      setLoading(false)
-      showAlert('Signup failed', error.message)
-      return
-    }
-
-    if (data.user) {
-      const { error: profileError } =
-        await supabase.from('user_profile').insert({
-          user_id: data.user.id,
-          name,
-          profession,
+    try {
+      const { data, error } =
+        await supabase.auth.signUp({
+          email,
+          password,
         })
 
-      if (profileError) {
-        console.log(
-          'Profile insert error:',
-          profileError
-        )
-
-        showAlert(
-          'Profile save failed',
-          profileError.message
-        )
+      if (error) {
+        showAlert('Signup failed', error.message)
+        return
       }
-    }
 
-    setLoading(false)
-    router.replace('/')
+      if (data.user) {
+        const { error: profileError } =
+          await supabase.from('user_profile').insert({
+            user_id: data.user.id,
+            name,
+            profession,
+          })
+
+        if (profileError) {
+          console.log('Profile insert error:', profileError)
+          showAlert('Profile save failed', profileError.message)
+        }
+      }
+
+      router.replace('/')
+    } catch (error) {
+      console.error('Signup request failed:', error)
+      showAlert(
+        'Signup failed',
+        error instanceof Error ? error.message : 'Please check your connection and try again.',
+      )
+    } finally {
+      setLoading(false)
+    }
   }
 
   const isFormValid =
@@ -115,7 +115,7 @@ export default function SignupScreen() {
                 },
               ]}
             >
-              Focal
+              Sorted
             </Text>
           </View>
 

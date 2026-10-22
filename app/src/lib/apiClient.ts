@@ -14,17 +14,29 @@ export async function apiFetch(
     throw new Error('Not logged in');
   }
 
-  const response = await fetch(
+  const send = (accessToken: string) => fetch(
     `${process.env.EXPO_PUBLIC_API_URL}${path}`,
     {
       ...options,
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${session.access_token}`,
+        Authorization: `Bearer ${accessToken}`,
         ...options.headers,
       },
     }
   );
+
+  let response = await send(session.access_token);
+
+  // The app may resume with a token that expired while it was in the
+  // background. Refresh once, then retry the original request once.
+  if (response.status === 401) {
+    const { data, error } = await supabase.auth.refreshSession();
+    const refreshedToken = data.session?.access_token;
+    if (!error && refreshedToken && refreshedToken !== session.access_token) {
+      response = await send(refreshedToken);
+    }
+  }
 
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));

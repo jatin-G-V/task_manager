@@ -270,7 +270,7 @@ def _order(entries: list):
     """Split eligible entries into the three tiers and sort each tier.
 
     Single source of truth: rank() and build_dashboard() both use it, so the
-    "Up next" suggestion and the first item of the ranked list cannot disagree.
+    Suggested Focus and the first item of the ranked list cannot disagree.
     Tier order: pinned (happening now) -> at risk -> everything else.
     """
     pinned = sorted(
@@ -399,6 +399,54 @@ def rank(
         _present(e)
         for e in picks[:MAX_MOOD_PICKS]
     ]
+
+
+def next_scheduled(
+    tasks: list,
+    now: datetime,
+    exclude_ids=(),
+) -> Optional[dict]:
+    """Return the next future exact-time commitment, or None.
+
+    ``now`` and stored timestamps are compared as local wall-clock values,
+    matching rank(). A meeting at exactly the pinned-window boundary belongs
+    to Suggested Focus, so Upcoming Schedule starts strictly after it.
+    """
+    excluded = {str(task_id) for task_id in exclude_ids}
+    threshold = now + timedelta(minutes=PINNED_WINDOW_MIN)
+
+    eligible = []
+    for task in tasks:
+        start = _dt(task.get("scheduled_start"))
+        if (
+            task.get("schedule_type") != "scheduled"
+            or not task.get("has_explicit_time")
+            or start is None
+            or start <= threshold
+            or task.get("status") in INACTIVE_STATUSES
+            or task.get("is_blocked")
+            or str(task.get("id")) in excluded
+        ):
+            continue
+
+        end = _dt(task.get("scheduled_end"))
+        created = _dt(task.get("created_at"))
+        eligible.append((
+            (
+                start,
+                end is None,
+                end or datetime.max,
+                created or datetime.max,
+                str(task.get("id") or ""),
+            ),
+            task,
+        ))
+
+    if not eligible:
+        return None
+
+    eligible.sort(key=lambda item: item[0])
+    return eligible[0][1]
 
 
 # ============================================================
@@ -543,9 +591,12 @@ def build_dashboard(
     next_upcoming = selectable[0] if selectable else None
 
     # option B: nearest upcoming task that has an exact time
-    next_upcoming_explicit = next(
-        (u for u in selectable if u.get("has_explicit_time")),
-        None,
+    focus_pick = rank(tasks, now=now, limit=1, energy=energy)
+    focus_ids = [focus_pick[0]["id"]] if focus_pick else []
+    next_explicit_task = next_scheduled(tasks, now, exclude_ids=focus_ids)
+    next_upcoming_explicit = (
+        {**_build_overdue_entry(next_explicit_task), "reason": "upcoming"}
+        if next_explicit_task else None
     )
 
     # --------------------------------------------------------

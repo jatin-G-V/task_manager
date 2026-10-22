@@ -164,6 +164,7 @@ Always resolve relative expressions using the current date and time
 provided at the top. Never use dates from examples as the current date.
 
 "in 2 hours" / "in 30 minutes" -> current datetime + that duration
+"90 minutes from now" -> current datetime + 90 minutes
 "tomorrow" -> tomorrow's calendar day
 "this week" -> the current calendar week (Monday to Sunday)
 "next week" -> the following calendar week (Monday to Sunday)
@@ -286,6 +287,7 @@ Examples:
 "Meeting Friday at 5 PM" -> scheduled, scheduled_start = Friday 5 PM
 "Gym tomorrow at 7 AM" -> scheduled, scheduled_start = tomorrow 7 AM
 "Finish this in 2 hours" -> flexible, deadline = current datetime + 2 hours
+"Finish the budget update 90 minutes from now. It should take about three hours." -> flexible, deadline = current datetime + 90 minutes, duration = 180, estimated_time_minutes = 180, urgency = null
 "Meeting in 2 hours" -> scheduled, scheduled_start = current datetime + 2 hours
 "Buy milk tomorrow" -> scheduled
 "Prepare the report tomorrow" -> flexible
@@ -429,23 +431,29 @@ Set is_recurring = true only when the user explicitly indicates
 repetition. If not recurring: is_recurring = false, recurrence = null,
 recurrence_end = null.
 
-Store only the repeating pattern in recurrence. Never store the end date
-inside recurrence.
+Store recurrence as an RFC 5545 RRULE BODY string. Use only the patterns
+below and these exact day codes: MO,TU,WE,TH,FR,SA,SU.
 
-Examples:
+"every day" -> recurrence = "FREQ=DAILY"
+"every other day" / "every 2 days" -> recurrence = "FREQ=DAILY;INTERVAL=2"
+"every day except Sunday" -> recurrence = "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA"
+"weekdays" -> recurrence = "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR"
+"every Monday" -> recurrence = "FREQ=WEEKLY;BYDAY=MO"
+"every Mon, Wed and Fri" -> recurrence = "FREQ=WEEKLY;BYDAY=MO,WE,FR"
+"every 2 weeks" -> recurrence = "FREQ=WEEKLY;INTERVAL=2"
+"every month (same date)" -> recurrence = "FREQ=MONTHLY;BYMONTHDAY=<day of first occurrence>"
+"every year" -> recurrence = "FREQ=YEARLY"
 
-"every day" -> recurrence = "daily"
-"every Monday" -> recurrence = "weekly on Monday"
-"every Monday, Wednesday and Friday" -> recurrence = "weekly on Monday, Wednesday and Friday"
-"every month" -> recurrence = "monthly"
-"every year" -> recurrence = "yearly"
+Never put DTSTART, UNTIL, or COUNT inside recurrence. Put any ending date
+in recurrence_end. Do not invent a recurrence pattern that is not supported
+by the user's wording.
 
 RECURRENCE END
 
 If an end is stated, store it separately in recurrence_end:
 
-"Gym every day until December 31" -> recurrence = "daily", recurrence_end = December 31 of the relevant year
-"Take medicine every day for 10 days" -> recurrence = "daily", recurrence_end = current date + 10 days
+"Gym every day until December 31" -> recurrence = "FREQ=DAILY", recurrence_end = December 31 of the relevant year
+"Take medicine every day for 10 days" -> recurrence = "FREQ=DAILY", recurrence_end = current date + 10 days
 
 If no end is stated: recurrence_end = null.
 
@@ -459,7 +467,7 @@ occurrence.
 
 Example (pretend today is Wednesday 2031-03-12):
 "Study every Monday at 7 PM"
--> recurrence = "weekly on Monday", scheduled_start = 2031-03-17 at 19:00
+-> recurrence = "FREQ=WEEKLY;BYDAY=MO", scheduled_start = 2031-03-17 at 19:00
 
 2031-03-16 is a Sunday, so it MUST NOT be used as the Monday occurrence.
 Before returning a recurring scheduled date, verify that the calculated
@@ -473,7 +481,7 @@ scheduled time.
 Example:
 
 "Submit weekly report every Friday by 5 PM"
--> recurrence = "weekly on Friday", deadline = upcoming Friday at 5 PM,
+-> recurrence = "FREQ=WEEKLY;BYDAY=FR", deadline = upcoming Friday at 5 PM,
   has_explicit_time = true
 
 Do not collapse the recurrence into one permanent one-time deadline.
@@ -524,6 +532,8 @@ IMPORTANT DISTINCTION:
   duration = null
 - "Finish this within 2 hours." -> deadline = current datetime + 2 hours,
   duration = null
+- "Finish this 90 minutes from now; it will take 3 hours." -> deadline = current datetime + 90 minutes,
+  duration = 180, estimated_time_minutes = 180, and no scheduled_start
 - "Work on this for 2 hours." -> duration = 120
 
 Do not confuse a time-to-deadline expression with task duration.
@@ -664,6 +674,8 @@ consequences if not completed.
 
 urgent: the USER explicitly communicates urgency or marks the task as
 urgent ("urgent", "ASAP", "immediately", "right now", "do this urgently").
+"Top priority" or "highest priority" means high, not urgent, unless the user
+also explicitly says the task is urgent or needs immediate action.
 
 Examples:
 
@@ -693,8 +705,8 @@ Before returning the JSON, verify the relationships between fields.
 3. If has_explicit_time = false and a scheduled task uses a vague time period: scheduled_end should normally be populated
 4. If has_explicit_time = true: scheduled_end is only populated when an end time or reliable duration is explicitly supported
 5. If is_recurring = false: recurrence = null, recurrence_end = null
-6. If is_recurring = true: recurrence must describe the repeating pattern
-7. recurrence_end must always be stored separately from recurrence
+6. If is_recurring = true: recurrence must be an RRULE body using FREQ and supported fields
+7. Never put DTSTART, UNTIL, or COUNT in recurrence; recurrence_end stores the ending date
 8. For recurring scheduled tasks: scheduled_start must be the first upcoming occurrence and must match the recurrence pattern
 9. If duration is not null:
    - duration must have been explicitly provided by the user.
@@ -828,6 +840,11 @@ def _normalize(d: dict, now) -> dict:
         d["is_recurring"] = False
         d["recurrence"] = None
         d["recurrence_end"] = None
+    elif isinstance(d.get("recurrence"), str):
+        recurrence = d["recurrence"].strip().upper()
+        if recurrence.startswith("RRULE:"):
+            recurrence = recurrence.split(":", 1)[1].strip()
+        d["recurrence"] = recurrence or None
 
     return d
 
@@ -851,6 +868,14 @@ Set the field "related" to {{"task_id": "<id>", "relation": "duplicate" | "part_
 
 # `{{ }}` collapse hone ke liye, aur prompt ek hi baar banta hai (cacheable)
 STATIC_PROMPT = SYSTEM_PROMPT.format()
+
+BATCH_OUTPUT_INSTRUCTIONS = """The next user message contains a JSON object with an `items` array. Each entry has an integer `index` and a task `text`.
+Parse every entry independently using all rules above. Do not copy dates, times,
+or details from one entry to another. Return exactly one result for each index,
+in the same order, using this envelope:
+{"items":[{"index":0,"task":{...the exact task structure specified above...}}]}
+Each `task` must use the complete single-task structure above, including null
+values. Do not omit entries, combine entries, or return any text outside JSON."""
 
 
 def parse_task_text(raw_text: str) -> dict:
@@ -900,3 +925,81 @@ def parse_task_text(raw_text: str) -> dict:
     result = _normalize(parsed.model_dump(), now)
     result.pop("related", None)   # never a database column
     return result
+
+
+def parse_task_texts(raw_texts: list[str]) -> list[dict]:
+    """Parse several independent task descriptions in one provider request.
+
+    Each item goes through the same ParsedTask validation and deterministic
+    normalization as parse_task_text. A malformed batch raises ValueError so
+    the caller can safely fall back to the original per-item parser.
+    """
+    if not raw_texts:
+        return []
+
+    now = now_local()
+    context = (
+        "CURRENT CONTEXT\n"
+        f"Current date: {now:%Y-%m-%d} ({now:%A})\n"
+        f"Current time: {now:%H:%M}\n"
+        f"Timezone: {APP_TZ} (UTC{utc_offset_str()})\n"
+        f"Current local datetime: {now.isoformat(timespec='minutes')}"
+    )
+    batch_input = {
+        "items": [
+            {"index": index, "text": raw_text}
+            for index, raw_text in enumerate(raw_texts)
+        ]
+    }
+
+    started = time.perf_counter()
+    response = groq_client.chat.completions.create(
+        model="openai/gpt-oss-120b",
+        response_format={"type": "json_object"},
+        temperature=0.2,
+        messages=[
+            {"role": "system", "content": STATIC_PROMPT},
+            {"role": "system", "content": context},
+            {"role": "system", "content": BATCH_OUTPUT_INSTRUCTIONS},
+            {"role": "user", "content": json.dumps(batch_input, ensure_ascii=False)},
+        ],
+    )
+
+    usage = getattr(response, "usage", None)
+    details = getattr(usage, "prompt_tokens_details", None)
+    logger.info(
+        "BATCH_PARSE items=%d %.2fs prompt_tokens=%s cached_tokens=%s",
+        len(raw_texts),
+        time.perf_counter() - started,
+        getattr(usage, "prompt_tokens", None),
+        getattr(details, "cached_tokens", None),
+    )
+
+    raw = response.choices[0].message.content
+    try:
+        data = json.loads(raw)
+        entries = data["items"]
+        if not isinstance(entries, list) or len(entries) != len(raw_texts):
+            raise ValueError("The batch parser returned an incomplete result.")
+
+        by_index = {}
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise ValueError("The batch parser returned an invalid item.")
+            index = entry.get("index")
+            if not isinstance(index, int) or index in by_index or not 0 <= index < len(raw_texts):
+                raise ValueError("The batch parser returned invalid item indexes.")
+            by_index[index] = entry["task"]
+        if len(by_index) != len(raw_texts):
+            raise ValueError("The batch parser omitted one or more tasks.")
+
+        parsed_items = []
+        for index in range(len(raw_texts)):
+            parsed = ParsedTask(**by_index[index]).model_dump()
+            parsed = _normalize(parsed, now)
+            parsed.pop("related", None)
+            parsed_items.append(parsed)
+        return parsed_items
+    except (json.JSONDecodeError, KeyError, TypeError, ValidationError, ValueError) as exc:
+        logger.warning("Invalid batch task parse; caller should use single-item fallback: %s", exc)
+        raise ValueError("The batch parser returned an invalid result.") from exc

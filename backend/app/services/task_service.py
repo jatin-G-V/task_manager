@@ -7,8 +7,8 @@ from uuid import NAMESPACE_URL, uuid5
 from rapidfuzz import fuzz
 from postgrest.exceptions import APIError
 
-from app.services.recommendation import rank, build_dashboard
-from app.services.recurrence import next_occurrence
+from app.services.recommendation import rank, build_dashboard, next_scheduled
+from app.services.recurrence import next_occurrence, validate_task_recurrence
 from app.services.timeutil import now_local, now_local_naive, to_local
 from app.db.supabase_client import supabase
 
@@ -102,6 +102,9 @@ def create_task(user_id: str, data: dict) -> dict:
 
     _validate_not_in_past(data)
 
+    if data.get("is_recurring"):
+        data["recurrence_anchor"] = data.get("scheduled_start") or data.get("deadline")
+
     row = {
         **data,
         "user_id": user_id,
@@ -151,6 +154,7 @@ def list_tasks(
     status=None,
     search=None,
     limit=20,
+    include_completed=False,
 ) -> list:
     query = (
         supabase
@@ -164,7 +168,7 @@ def list_tasks(
 
     if status:
         query = query.eq("status", status)
-    else:
+    elif not include_completed:
         query = query.neq("status", "completed")
 
     if search:
@@ -197,6 +201,20 @@ def update_task(user_id: str, task_id: str, updates: dict) -> dict:
         merged["estimated_time_minutes"] = updates["duration"]
         updates = {**updates, "estimated_time_minutes": updates["duration"]}
 
+    recurrence_fields = {"recurrence", "scheduled_start", "deadline", "is_recurring"}
+    recurrence_changed = bool(recurrence_fields & set(updates))
+    if merged.get("is_recurring") and recurrence_changed:
+        merged_recurrence = validate_task_recurrence(merged)
+        if "recurrence" in updates or not existing.get("is_recurring"):
+            updates = {**updates, "recurrence": merged_recurrence}
+        # A deliberate pattern change starts a new series from its selected
+        # first date. Ordinary occurrence edits keep the original anchor.
+        if "recurrence" in updates or not existing.get("is_recurring"):
+            updates = {
+                **updates,
+                "recurrence_anchor": merged.get("scheduled_start") or merged.get("deadline"),
+            }
+
     # Validate temporal values only when the caller changed those values.
     # Schedule and recurrence consistency still use the fully merged row.
     _validate_not_in_past(merged, changed_fields=set(updates))
@@ -224,8 +242,8 @@ def _ensure_next_occurrence(user_id: str, completed_task: dict) -> Optional[dict
     try:
         next_fields = next_occurrence(completed_task, to_local(completed_at))
     except ValueError:
-        logger.warning(
-            "Unsupported recurrence rule %r for task %s; no next occurrence was created",
+        logger.exception(
+            "Invalid recurrence rule %r for task %s; no next occurrence was created",
             completed_task.get("recurrence"),
             completed_task.get("id"),
         )
@@ -259,6 +277,7 @@ def _ensure_next_occurrence(user_id: str, completed_task: dict) -> Optional[dict
         "is_recurring",
         "recurrence",
         "recurrence_end",
+        "recurrence_anchor",
         "duration",
         "estimated_time_minutes",
         "effort",
@@ -345,7 +364,15 @@ def complete_tasks(user_id: str, task_ids: list) -> list:
     ]
 
     for task in completed:
-        _ensure_next_occurrence(user_id, task)
+        try:
+            _ensure_next_occurrence(user_id, task)
+        except (ValueError, APIError):
+            # The completion itself is already committed. A bad legacy rule
+            # or failed next-row insert must not undo/obscure that completion.
+            logger.exception(
+                "Could not create the next occurrence for completed task %s",
+                task.get("id"),
+            )
 
     return completed
 
@@ -398,6 +425,18 @@ def get_dashboard(
         now=now_local_naive(),
         energy=energy,
     )
+
+
+def get_upcoming_schedule(
+    user_id: str,
+    energy: Optional[str] = None,
+) -> Optional[dict]:
+    """Get the next fixed-time commitment, excluding current focus server-side."""
+    tasks = list_tasks(user_id, limit=500)
+    now = now_local_naive()
+    focus = rank(tasks, now=now, limit=1, energy=energy)
+    exclude_ids = [focus[0]["id"]] if focus else []
+    return next_scheduled(tasks, now=now, exclude_ids=exclude_ids)
 
 
 def get_daily_digest(user_id: str) -> dict:
@@ -521,6 +560,8 @@ def _validate_not_in_past(
             raise ValueError(
                 "recurrence and recurrence_end require is_recurring=true."
             )
+    elif changed_fields is None or {"recurrence", "scheduled_start", "deadline", "is_recurring"} & changed_fields:
+        data["recurrence"] = validate_task_recurrence(data)
 
     # --------------------------------------------------
     # Schedule consistency
@@ -538,3 +579,8 @@ def _validate_not_in_past(
     elif schedule_type == "flexible":
         if data.get("scheduled_start"):
             raise ValueError("flexible task cannot have scheduled_start")
+
+
+def validate_new_task_data(data: dict) -> None:
+    """Validate parsed task fields before duplicate/clash handling."""
+    _validate_not_in_past(data)

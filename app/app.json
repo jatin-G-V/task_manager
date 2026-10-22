@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "app",
+    "name": "Sorted",
     "slug": "app",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -25,6 +25,12 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Allow $(PRODUCT_NAME) to record voice input for tasks."
+        }
+      ],
       [
         "expo-splash-screen",
         {

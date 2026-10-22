@@ -3,6 +3,7 @@ import React, {
   useEffect,
   useMemo,
   useState,
+  useRef,
 } from 'react'
 
 
@@ -18,6 +19,8 @@ import {
   Pressable,
 
   StyleSheet,
+
+  AppState,
 
 } from 'react-native'
 
@@ -46,7 +49,8 @@ import BottomTabBar from '../components/BottomTabBar'
 import FAB from '../components/FAB'
 
 import { whenLabel, reasonLabel, greeting } from '../utils/taskTime'
-import { recurrenceLabel } from '../utils/taskFormat'
+import { recurrenceLabel, timingLabel } from '../utils/taskFormat'
+import { apiFetch } from '../lib/apiClient'
 
 import {
 
@@ -131,6 +135,27 @@ const energyOptions: {
 const DIGEST_ROUTE = '/dailyDigest' as Href
 const OVERDUE_ROUTE = '/overDue' as Href
 
+function mapUpcomingRow(row: Record<string, any>): Task {
+  return {
+    id: row.id,
+    title: row.title,
+    section: row.section ?? 'personal',
+    brief: row.brief ?? undefined,
+    deadline: row.deadline ?? null,
+    priority: 'medium',
+    effort: row.effort ?? undefined,
+    urgency: row.urgency ?? undefined,
+    scheduleType: row.schedule_type,
+    scheduledStart: row.scheduled_start,
+    scheduledEnd: row.scheduled_end,
+    hasExplicitTime: row.has_explicit_time,
+    isBlocked: Boolean(row.is_blocked),
+    isRecurring: Boolean(row.is_recurring),
+    recurrence: row.recurrence ?? null,
+    recurrenceEnd: row.recurrence_end ?? null,
+  }
+}
+
 
 // DASHBOARD
 
@@ -157,13 +182,67 @@ export default function DashboardScreen() {
   const router = useRouter()
   const insets = useSafeAreaInsets()
 
+  const [upcomingTask, setUpcomingTask] = useState<Task | null>(null)
+  const [upcomingLoading, setUpcomingLoading] = useState(true)
+  const [upcomingError, setUpcomingError] = useState(false)
+  const upcomingRequest = useRef<AbortController | null>(null)
+  const upcomingTaskRef = useRef(upcomingTask)
+  const dashboardFocused = useRef(false)
+  const refreshTasksRef = useRef(refreshTasks)
+  const fetchUpcomingRef = useRef<() => void>(() => {})
+  refreshTasksRef.current = refreshTasks
+  upcomingTaskRef.current = upcomingTask
+
+  fetchUpcomingRef.current = () => {
+    upcomingRequest.current?.abort()
+    const controller = new AbortController()
+    upcomingRequest.current = controller
+
+    const backendEnergy = energy === 'focused' ? 'medium' : energy
+    const query = backendEnergy
+      ? `?energy=${encodeURIComponent(backendEnergy)}`
+      : ''
+
+    void apiFetch(`/tasks/upcoming${query}`, { signal: controller.signal })
+      .then((row: Record<string, any> | null) => {
+        if (controller.signal.aborted) return
+        setUpcomingTask(row ? mapUpcomingRow(row) : null)
+        setUpcomingError(false)
+        setUpcomingLoading(false)
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) return
+        console.error('Error fetching upcoming schedule:', error)
+        setUpcomingError(true)
+        setUpcomingLoading(false)
+      })
+  }
+
   useFocusEffect(
     useCallback(() => {
-      refreshTasks()
-      const id = setInterval(refreshTasks, 5 * 60 * 1000)
-      return () => clearInterval(id)
+      dashboardFocused.current = true
+      const refreshDashboard = (showLoading = false) => {
+        if (showLoading && !upcomingTaskRef.current) setUpcomingLoading(true)
+        void refreshTasksRef.current()
+        fetchUpcomingRef.current()
+      }
+      refreshDashboard(true)
+      const id = setInterval(refreshDashboard, 60 * 1000)
+      const appStateListener = AppState.addEventListener('change', (state) => {
+        if (state === 'active') refreshDashboard(true)
+      })
+      return () => {
+        dashboardFocused.current = false
+        clearInterval(id)
+        appStateListener.remove()
+        upcomingRequest.current?.abort()
+      }
     }, [])
   )
+
+  useEffect(() => {
+    if (dashboardFocused.current) fetchUpcomingRef.current()
+  }, [energy])
 
   const allTasks = useMemo(
     () => [...tasks.work, ...tasks.personal, ...tasks.leisure],
@@ -184,11 +263,6 @@ export default function DashboardScreen() {
   const upNext = candidates.length > 0 ? candidates[skip % candidates.length] : null
 
   const showSomethingElse = () => setSkip((s) => s + 1)
-
-  const visibleTasks = useMemo(
-    () => rankedTasks.filter((x) => x.id !== upNext?.id),
-    [rankedTasks, upNext?.id]
-  )
 
   const toggleEnergy = (value: Exclude<EnergyLevel, null>) => {
     setSkip(0)
@@ -640,7 +714,7 @@ export default function DashboardScreen() {
 
               {/* ==================================================
 
-                  SUGGESTED / UP NEXT
+                  SUGGESTED FOCUS
 
               ================================================== */}
 
@@ -710,7 +784,7 @@ export default function DashboardScreen() {
 
                       >
 
-                        Up next
+                        Suggested Focus
 
                       </Text>
 
@@ -1196,7 +1270,51 @@ export default function DashboardScreen() {
 
 
 
+{!upcomingLoading && !upcomingError && (
+                <View style={styles.section}>
+                  <View style={styles.sectionHeader}>
+                    <View style={styles.sectionTitleRow}>
+                      <Sparkles size={14} color={t.primary} />
+                      <Text style={[styles.sectionTitle, { color: t.text }]}>Upcoming Schedule</Text>
+                    </View>
+                  </View>
 
+                  {upcomingTask ? (
+                    <Pressable
+                      onPress={() => router.push({
+                        pathname: '/task-details',
+                        params: { id: upcomingTask.id, section: upcomingTask.section },
+                      })}
+                      style={({ pressed }) => [
+                        styles.suggestedCard,
+                        { backgroundColor: t.surface, borderColor: t.border },
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      <View style={styles.suggestedTopRow}>
+                        <Text style={[styles.sectionName, { color: t.muted }]}>
+                          {upcomingTask.section}
+                        </Text>
+                      </View>
+                      <Text numberOfLines={2} style={[styles.suggestedTitle, { color: t.text }]}>
+                        {upcomingTask.title}
+                      </Text>
+                      <Text style={[styles.suggestedDeadline, { color: t.muted }]}>
+                        {timingLabel(upcomingTask).text}
+                      </Text>
+                    </Pressable>
+                  ) : (
+                    <View style={[
+                      styles.suggestedCard,
+                      { backgroundColor: t.surface, borderColor: t.border },
+                    ]}>
+                      <Text style={[styles.suggestedDeadline, { color: t.muted, marginTop: 0 }]}>
+                        No upcoming scheduled tasks.
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              )}
 
               {/* ==================================================
 
@@ -1355,209 +1473,13 @@ export default function DashboardScreen() {
               </View>
             )}
 
-            {/* ==================================================
-                ALL TASKS
-              ================================================== */}
-
-
-
-              {visibleTasks.length >
-
-                0 && (
-
-                <View
-
-                  style={
-
-                    styles.section
-
-                  }
-
-                >
-
-                  <View
-
-                    style={
-
-                      styles.sectionHeader
-
-                    }
-
-                  >
-
-                    <Text
-
-                      style={[
-
-                        styles.sectionTitle,
-
-                        {
-
-                          color:
-
-                            t.text,
-
-                        },
-
-                      ]}
-
-                    >
-
-                      Next up
-
-                    </Text>
-
-
-
-                    <Text
-
-                      style={[
-
-                        styles.taskCount,
-
-                        {
-
-                          color:
-
-                            t.muted,
-
-                        },
-
-                      ]}
-
-                    >
-
-                      Top{' '}
-
-                      {Math.min(
-
-                        4,
-
-                        visibleTasks.length
-
-                      )}{' '}
-
-                      of{' '}
-
-                      {
-
-                        visibleTasks.length
-
-                      }
-
-                    </Text>
-
-                  </View>
-
-
-
-
-
-                  <View
-
-                    style={[
-
-                      styles.taskList,
-
-                      {
-
-                        backgroundColor:
-
-                          t.surface,
-
-                        borderColor:
-
-                          t.border,
-
-                      },
-
-                    ]}
-
-                  >
-
-                    {visibleTasks
-
-                      .slice(0, 4)
-
-                      .map(
-
-                        (
-
-                          task,
-
-                          index
-
-                        ) => (
-
-                          <CompactTaskRow
-
-                            key={
-
-                              task.id
-
-                            }
-
-                            task={
-
-                              task
-
-                            }
-
-                            showDivider={
-
-                              index > 0
-
-                            }
-
-                            onOpen={() =>
-
-                              router.push({
-
-                                pathname:
-
-                                  '/task-details',
-
-                                params: {
-
-                                  id:
-
-                                    task.id,
-
-                                  section:
-
-                                    task.section,
-
-                                },
-
-                              })
-
-                            }
-
-                            onComplete={() =>
-
-                              handleComplete(task.id)
-
-                            }
-
-                            t={t}
-
-                          />
-
-                        )
-
-                      )}
-
-                  </View>
-
-                </View>
-
-              )}
-
-
-
             </>
 
           )}
+
+
+
+              
 
 
 
@@ -1810,206 +1732,6 @@ function OverdueRow({
           size={13}
 
           color={t.success}
-
-        />
-
-      </Pressable>
-
-    </View>
-
-  )
-
-}
-
-
-
-
-
-// ============================================================
-
-// COMPACT TASK ROW
-
-// ============================================================
-
-
-
-function CompactTaskRow({
-
-  task,
-
-  showDivider,
-
-  onOpen,
-
-  onComplete,
-
-  t,
-
-}: {
-
-  task: Task
-
-  showDivider: boolean
-
-  onOpen: () => void
-
-  onComplete: () => void
-
-  t: any
-
-}) {
-
-  return (
-
-    <View
-
-      style={[
-
-        styles.taskRow,
-
-        showDivider && {
-
-          borderTopWidth: 1,
-
-          borderTopColor:
-
-            t.border,
-
-        },
-
-      ]}
-
-    >
-
-      <Pressable
-
-        onPress={onComplete}
-
-        accessibilityLabel={`Complete ${task.title}`}
-
-        style={({ pressed }) => [
-
-          styles.checkbox,
-
-          {
-
-            backgroundColor:
-
-              t.surface2,
-
-            borderColor:
-
-              t.border,
-
-          },
-
-          pressed &&
-
-            styles.pressed,
-
-        ]}
-
-      >
-
-        <Check
-
-          size={11}
-
-          color={t.muted}
-
-        />
-
-      </Pressable>
-
-
-
-
-
-      <Pressable
-
-        onPress={onOpen}
-
-        style={({ pressed }) => [
-
-          styles.taskOpenButton,
-
-          pressed &&
-
-            styles.pressed,
-
-        ]}
-
-      >
-
-        <View
-
-          style={
-
-            styles.taskTextContainer
-
-          }
-
-        >
-
-          <Text
-
-            numberOfLines={1}
-
-            style={[
-
-              styles.taskTitle,
-
-              {
-
-                color:
-
-                  t.text,
-
-              },
-
-            ]}
-
-          >
-
-            {task.title}
-
-          </Text>
-
-
-
-          <Text
-
-            style={[
-
-              styles.taskSection,
-
-              {
-
-                color:
-
-                  t.muted,
-
-              },
-
-            ]}
-
-          >
-
-            {recurrenceLabel(task)
-              ? `${task.section} · ${recurrenceLabel(task)}`
-              : task.section}
-
-          </Text>
-
-        </View>
-
-
-
-        <ChevronRight
-
-          size={14}
-
-          color={t.muted}
 
         />
 
@@ -2384,18 +2106,6 @@ const styles = StyleSheet.create({
       'DM Serif Display',
 
   },
-
-
-
-  taskCount: {
-
-    fontSize: 10.5,
-
-    fontFamily: 'Outfit',
-
-  },
-
-
 
 
 
@@ -2776,116 +2486,6 @@ const styles = StyleSheet.create({
     justifyContent:
 
       'center',
-
-  },
-
-
-
-
-
-  // ==========================================================
-
-  // TASK LIST
-
-  // ==========================================================
-
-
-
-  taskList: {
-
-    overflow: 'hidden',
-
-    borderRadius: 17,
-
-    borderWidth: 1,
-
-  },
-
-
-
-  taskRow: {
-
-    flexDirection: 'row',
-
-    alignItems: 'center',
-
-    gap: 10,
-
-    paddingHorizontal: 12,
-
-    paddingVertical: 10,
-
-  },
-
-
-
-  checkbox: {
-
-    width: 25,
-
-    height: 25,
-
-    borderRadius: 13,
-
-    borderWidth: 1.5,
-
-    alignItems: 'center',
-
-    justifyContent:
-
-      'center',
-
-  },
-
-
-
-  taskOpenButton: {
-
-    flex: 1,
-
-    minWidth: 0,
-
-    flexDirection: 'row',
-
-    alignItems: 'center',
-
-  },
-
-
-
-  taskTextContainer: {
-
-    flex: 1,
-
-    minWidth: 0,
-
-  },
-
-
-
-  taskTitle: {
-
-    fontSize: 12.5,
-
-    fontWeight: '500',
-
-    fontFamily: 'Outfit',
-
-  },
-
-
-
-  taskSection: {
-
-    fontSize: 9.5,
-
-    textTransform:
-
-      'capitalize',
-
-    marginTop: 1,
-
-    fontFamily: 'Outfit',
 
   },
 

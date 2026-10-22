@@ -13,7 +13,7 @@ Spec recap
 
 from datetime import datetime
 
-from app.services.recommendation import rank
+from app.services.recommendation import build_dashboard, next_scheduled, rank
 
 NOW = datetime(2026, 10, 2, 10, 0)
 
@@ -117,7 +117,9 @@ def test_inactive_tasks_excluded():
         task("blocked_flag", blocked=True),
         task("live"),
     ]
-    assert ids(rank(tasks, NOW, limit=10)) == ["live"]
+    # Blocking is represented by is_blocked; the status string alone is not
+    # an eligibility signal in the current task schema.
+    assert ids(rank(tasks, NOW, limit=10)) == ["blocked_status", "live"]
 
 
 def test_flexible_task_with_explicit_deadline():
@@ -195,8 +197,105 @@ def test_time_estimate_never_exposed():
     assert "estimated_time_minutes" not in out[0]
 
 
-def test_db_style_aware_timestamps_are_treated_as_wall_clock():
-    # Supabase returns timestamptz as "+00:00" strings; the engine compares wall-clock
-    out = rank([task("m", schedule_type="scheduled",
-                     start="2026-10-02T10:05:00+00:00", explicit=True)], NOW)
-    assert ids(out) == ["m"]
+def test_db_style_aware_timestamps_are_compared_as_the_same_local_instant():
+    utc = task("utc", schedule_type="scheduled",
+               start="2026-10-02T04:35:00+00:00", explicit=True)
+    local = task("local", schedule_type="scheduled",
+                 start="2026-10-02T10:05:00+05:30", explicit=True)
+    assert ids(rank([utc, local], NOW, limit=5)) == ["utc", "local"]
+
+
+def test_upcoming_schedule_returns_future_exact_time_commitment():
+    meeting = task("next", schedule_type="scheduled", start="2026-10-02T11:00:00", explicit=True)
+    assert next_scheduled([meeting], NOW)["id"] == "next"
+
+
+def test_upcoming_schedule_boundary_is_pinned_inclusive():
+    boundary = task("boundary", schedule_type="scheduled", start="2026-10-02T10:08:00", explicit=True)
+    later = task("later", schedule_type="scheduled", start="2026-10-02T10:08:01", explicit=True)
+    assert next_scheduled([boundary, later], NOW)["id"] == "later"
+
+
+def test_upcoming_schedule_boundary_plus_one_second_is_eligible():
+    meeting = task("later", schedule_type="scheduled", start="2026-10-02T10:08:01", explicit=True)
+    assert next_scheduled([meeting], NOW)["id"] == "later"
+
+
+def test_upcoming_schedule_skips_pinned_task_and_shows_later_meeting():
+    pinned = task("pinned", schedule_type="scheduled", start="2026-10-02T10:05:00", explicit=True)
+    later = task("later", schedule_type="scheduled", start="2026-10-02T11:00:00", explicit=True)
+    assert next_scheduled([pinned, later], NOW)["id"] == "later"
+
+
+def test_dashboard_upcoming_field_excludes_the_suggested_focus():
+    pinned = task("pinned", schedule_type="scheduled", start="2026-10-02T10:05:00", explicit=True)
+    later = task("later", schedule_type="scheduled", start="2026-10-02T10:30:00", explicit=True)
+    dashboard = build_dashboard([pinned, later], NOW)
+    assert dashboard["focus"]["id"] == "pinned"
+    assert dashboard["next_upcoming_explicit"]["id"] == "later"
+
+
+def test_upcoming_schedule_empty_when_pinned_focus_is_only_meeting():
+    pinned = task("pinned", schedule_type="scheduled", start="2026-10-02T10:05:00", explicit=True)
+    assert next_scheduled([pinned], NOW, exclude_ids={"pinned"}) is None
+
+
+def test_upcoming_schedule_excludes_flexible_deadlines():
+    flexible = task("flexible", deadline="2026-10-02T11:00:00", explicit=True)
+    assert next_scheduled([flexible], NOW) is None
+
+
+def test_upcoming_schedule_excludes_vague_scheduled_windows():
+    vague = task("vague", schedule_type="scheduled", start="2026-10-02T11:00:00", explicit=False)
+    assert next_scheduled([vague], NOW) is None
+
+
+def test_upcoming_schedule_excludes_missing_start():
+    no_start = task("no_start", schedule_type="scheduled", explicit=True)
+    assert next_scheduled([no_start], NOW) is None
+
+
+def test_upcoming_schedule_excludes_inactive_and_blocked_tasks():
+    tasks = [
+        task("completed", schedule_type="scheduled", start="2026-10-02T11:00:00", explicit=True, status="completed"),
+        task("dropped", schedule_type="scheduled", start="2026-10-02T11:01:00", explicit=True, status="dropped"),
+        task("blocked", schedule_type="scheduled", start="2026-10-02T11:02:00", explicit=True, blocked=True),
+    ]
+    assert next_scheduled(tasks, NOW) is None
+
+
+def test_upcoming_schedule_excludes_start_already_past_pinned_window():
+    missed = task("missed", schedule_type="scheduled", start="2026-10-02T09:00:00", explicit=True)
+    assert next_scheduled([missed], NOW) is None
+    assert missed["status"] == "pending"  # selection never changes task state
+
+
+def test_upcoming_schedule_sort_tiebreaks_end_created_and_id():
+    tasks = [
+        task("z", schedule_type="scheduled", start="2026-10-02T11:00:00", end="2026-10-02T12:00:00", explicit=True, created="2026-10-01T10:00:00"),
+        task("missing-end", schedule_type="scheduled", start="2026-10-02T11:00:00", explicit=True, created="2026-10-01T08:00:00"),
+        task("later-created", schedule_type="scheduled", start="2026-10-02T11:00:00", end="2026-10-02T11:30:00", explicit=True, created="2026-10-01T09:00:00"),
+        task("older", schedule_type="scheduled", start="2026-10-02T11:00:00", end="2026-10-02T11:30:00", explicit=True, created="2026-10-01T08:00:00"),
+        task("a", schedule_type="scheduled", start="2026-10-02T11:00:00", end="2026-10-02T11:30:00", explicit=True, created="2026-10-01T08:00:00"),
+    ]
+    assert next_scheduled(tasks, NOW)["id"] == "a"
+
+
+def test_upcoming_schedule_uses_same_instant_across_timezone_offsets():
+    utc = task("utc", schedule_type="scheduled", start="2026-10-03T02:30:00+00:00", explicit=True)
+    local = task("local", schedule_type="scheduled", start="2026-10-03T08:00:00+05:30", explicit=True)
+    now = datetime(2026, 10, 2, 10, 0)
+    assert next_scheduled([utc], now)["id"] == "utc"
+    assert next_scheduled([local], now)["id"] == "local"
+    from app.services.recommendation import _dt
+    assert _dt(utc["scheduled_start"]) == _dt(local["scheduled_start"])
+
+
+def test_upcoming_schedule_handles_just_after_midnight_tomorrow():
+    now = datetime(2026, 10, 15, 23, 0)
+    meeting = task("midnight", schedule_type="scheduled", start="2026-10-16T00:01:00", explicit=True)
+    assert next_scheduled([meeting], now)["id"] == "midnight"
+
+
+def test_upcoming_schedule_empty_input_returns_none():
+    assert next_scheduled([], NOW) is None

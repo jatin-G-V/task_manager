@@ -1,81 +1,112 @@
+
 import json
+import os
 
-from app.services.agent_tools import add_task
+from app.services import task_service
+from app.services.agent_tools import add_tasks, _pending
 
 
-TEST_USER_ID = "4335d308-386c-4a6d-9cdc-2da38cb11c8f"
+# Use a dedicated Supabase test user's auth.users UUID.
+# You can override this through PIPELINE_TEST_USER_ID.
+TEST_USER_ID = os.getenv(
+    "PIPELINE_TEST_USER_ID",
+    "4335d308-386c-4a6d-9cdc-2da38cb11c8f",
+)
+
+# Set KEEP_PIPELINE_TEST_TASKS=1 if you intentionally want to
+# retain successfully created test tasks in Supabase.
+KEEP_TEST_TASKS = os.getenv("KEEP_PIPELINE_TEST_TASKS", "0") == "1"
 
 
 TEST_CASES = [
-    # "Buy milk tomorrow after work.",
-
-    # "Prepare the client presentation for Friday. I need to finish the slides and review the numbers before sending it.",
-
-    # "I have a meeting with Amit tomorrow at 3 PM. It should take about 45 minutes.",
-
-    # "Watch Interstellar tonight and relax for a while.",
-
-    # "Read the new project documentation for 40 minutes tonight.",
-
-    # "Fix the login bug before the client demo tomorrow. It may take a couple of hours.",
-
-    # "Submit the final report Friday at 5 PM. Make sure all the numbers have been checked before submitting.",
-
-    # "I have a meeting with the client Friday at 5 PM to discuss the new requirements.",
-
-    # "Finish the presentation in the next 2 hours.",
-
-    # "Call Amit in 2 hours to discuss the deployment issue.",
-
-    # "Go to the gym every day.",
-
-    # "Go to the gym every day until December 31.",
-
-    # "Study every Monday at 7 PM for my upcoming exam.",
-
-    # "Submit the weekly report every Friday by 5 PM.",
-
-    # "Plan my Mumbai trip sometime next month. I need to check hotels, transport and places to visit.",
-
     "Finish the monthly expense report by the end of this month.",
-
     "Call the plumber tomorrow; it should only take around 10 minutes.",
-
-    "Prepare the quarterly client presentation. It involves collecting the results, creating the slides and reviewing everything before the meeting.",
-
+    (
+        "Prepare the quarterly client presentation. It involves "
+        "collecting the results, creating the slides and reviewing "
+        "everything before the meeting."
+    ),
     "Buy groceries sometime this week, preferably before the weekend.",
-
     "Urgent: send the invoice to the client today before 9 PM.",
-
     "Hello, how are you?",
-
     "Mumbai trip.",
-
     "Play football with the team tomorrow evening.",
-
     "Pay the electricity bill by next Friday and keep the receipt after payment.",
-
     "Go to the gym every Monday until November 30 and spend around one hour there.",
 ]
 
 
-for i, raw_text in enumerate(TEST_CASES, 1):
-    print(f"\n{'=' * 70}")
-    print(f"T{i:02d}")
-    print(f"{'=' * 70}")
-    print(f"Input: {raw_text}")
+def main():
+    created_ids = []
+
+    print("=" * 75)
+    print("END-TO-END TASK PIPELINE TEST")
+    print("=" * 75)
+    print("Pipeline: Groq parser -> add_tasks -> dedupe/clash checks -> Supabase")
+    print(f"Test user: {TEST_USER_ID}")
+    print(f"Test cases: {len(TEST_CASES)}")
 
     try:
-        result = add_task(
-            TEST_USER_ID,
-            {
-                "raw_text": raw_text
-            }
-        )
+        for index, raw_text in enumerate(TEST_CASES, 1):
+            print(f"\n{'=' * 75}")
+            print(f"T{index:02d}")
+            print(f"{'=' * 75}")
+            print(f"Input: {raw_text}")
 
-        print("\nRESULT: CREATED")
-        print(json.dumps(result, indent=2, default=str))
+            try:
+                # Execute the real task-creation pipeline.
+                result = add_tasks(
+                    TEST_USER_ID,
+                    {"items": [raw_text]},
+                )
 
-    except Exception as e:
-        print("\nRESULT: FAILED")
-        print(str(e))
+                # Track only records created by THIS invocation.
+                for task in result.get("created", []):
+                    task_id = task.get("id")
+                    if task_id:
+                        created_ids.append(task_id)
+
+                print(f"\nSTATUS: {result.get('status')}")
+                print("REPLY:")
+                print(result.get("reply", ""))
+                print("\nRESULT:")
+                print(json.dumps(result, indent=2, default=str))
+
+            except Exception as exc:
+                print("\nRESULT: FAILED")
+                print(f"{type(exc).__name__}: {exc}")
+
+    finally:
+        # Pending decisions are in-memory state, not database records.
+        # This script should be run against a dedicated test user.
+        _pending.pop(TEST_USER_ID, None)
+
+        if KEEP_TEST_TASKS:
+            print(
+                "\nCleanup skipped because KEEP_PIPELINE_TEST_TASKS=1."
+            )
+        elif created_ids:
+            try:
+                deleted = task_service.delete_tasks(
+                    TEST_USER_ID,
+                    created_ids,
+                )
+                print(
+                    f"\nCleanup: requested deletion of "
+                    f"{len(created_ids)} test-created task(s); "
+                    f"database returned {len(deleted or [])} deleted row(s)."
+                )
+            except Exception as exc:
+                print(
+                    "\nCLEANUP FAILED. Check Supabase for test-created "
+                    f"task IDs: {created_ids}"
+                )
+                print(f"{type(exc).__name__}: {exc}")
+        else:
+            print("\nCleanup: no tasks were created by this run.")
+
+    print("\nPipeline test run finished.")
+
+
+if __name__ == "__main__":
+    main()

@@ -88,6 +88,26 @@ def recommended_tasks(
 # Otherwise "dashboard" will be treated as a task UUID.
 # ============================================================
 
+@router.get("/tasks/upcoming")
+def upcoming_schedule(
+    energy: Optional[Literal["low", "medium", "high"]] = None,
+    user_id: str = Depends(get_current_user),
+):
+    task = task_service.get_upcoming_schedule(user_id, energy=energy)
+    if not task:
+        return None
+
+    # This card needs only public task details; keep backend-only estimates out.
+    return {
+        key: task.get(key)
+        for key in (
+            "id", "title", "section", "brief", "effort", "urgency",
+            "schedule_type", "deadline", "scheduled_start", "scheduled_end",
+            "has_explicit_time", "is_recurring", "recurrence", "recurrence_end",
+            "is_blocked",
+        )
+    } | {"reason": "upcoming"}
+
 @router.get("/tasks/dashboard")
 def dashboard(
     energy: Optional[Literal["low", "medium", "high"]] = None,

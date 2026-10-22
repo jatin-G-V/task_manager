@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react"
 import { useRouter, useLocalSearchParams } from "expo-router"
 import {
+  ActivityIndicator,
+  Alert,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -10,12 +12,28 @@ import {
   TextInput,
   View,
 } from "react-native"
+import {
+  RecordingPresets,
+  requestRecordingPermissionsAsync,
+  setAudioModeAsync,
+  useAudioRecorder,
+} from "expo-audio"
+import { File } from "expo-file-system"
 import { chatSuggestions } from "../data"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useApp } from "../context/AppContext"
 import type { ChatMessage } from "../data"
-import { ChevronLeft, ChevronRight, Send, Sparkles } from "../components/icons"
+import { ChevronLeft, ChevronRight, Mic, Send, Sparkles } from "../components/icons"
 import { apiFetch } from "../lib/apiClient"
+import { supabase } from "../lib/supabase"
+
+const MAX_RECORDING_MS = 60_000
+
+function formatRecordingTime(seconds: number) {
+  const minutes = Math.floor(seconds / 60)
+  const remainder = seconds % 60
+  return `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`
+}
 
 let chatCache: {
   email: string
@@ -62,16 +80,213 @@ useEffect(() => {
   }
 }, [messages, user.email])
 
-const [chatActive, setChatActive] = useState(
+  const [chatActive, setChatActive] = useState(
   Boolean(prefill) || messages.length > 1
 )
   const [sending, setSending] = useState(false)
+  const [isRecording, setIsRecording] = useState(false)
+  const [isTranscribing, setIsTranscribing] = useState(false)
+  const [recordingSeconds, setRecordingSeconds] = useState(0)
   const scrollRef = useRef<ScrollView>(null)
+  const recorder = useAudioRecorder({
+    ...RecordingPresets.HIGH_QUALITY,
+    isMeteringEnabled: true,
+  })
+  const recorderRef = useRef(recorder)
+  recorderRef.current = recorder
+  const autoStopTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const recordingStartedAt = useRef<number | null>(null)
+  const recordingUriRef = useRef<string | null>(null)
+  const stopInProgress = useRef(false)
+  const meteringAvailable = useRef(false)
+  const speechDetected = useRef(false)
+
+  useEffect(() => {
+    if (!isRecording) return
+
+    const interval = setInterval(() => {
+      const startedAt = recordingStartedAt.current
+      if (startedAt !== null) {
+        setRecordingSeconds(Math.min(60, Math.floor((Date.now() - startedAt) / 1000)))
+      }
+      // A pending interval tick can race with Expo releasing the native
+      // recorder as this screen unmounts. Ignore status reads in that window.
+      try {
+        const level = recorderRef.current.getStatus().metering
+        if (typeof level === "number") {
+          meteringAvailable.current = true
+          if (level > -50) speechDetected.current = true
+        }
+      } catch {
+        // The recorder is being released by useAudioRecorder.
+      }
+    }, 250)
+
+    return () => clearInterval(interval)
+  }, [isRecording])
+
+  useEffect(() => () => {
+    if (autoStopTimer.current) clearTimeout(autoStopTimer.current)
+    // useAudioRecorder owns and releases its native recorder on unmount.
+    // Do not inspect or stop that shared object here: it may already be
+    // released by the time this cleanup runs. The URI is a plain string, so
+    // the temporary file can still be removed safely.
+    if (recordingUriRef.current) {
+      try {
+        const tempFile = new File(recordingUriRef.current)
+        if (tempFile.exists) tempFile.delete()
+      } catch (error) {
+        console.warn("Could not delete temporary voice recording", error)
+      }
+    }
+    void setAudioModeAsync({ allowsRecording: false }).catch(() => undefined)
+  }, [])
+
+  const transcribeRecording = async () => {
+    if (stopInProgress.current) return
+    stopInProgress.current = true
+    if (autoStopTimer.current) {
+      clearTimeout(autoStopTimer.current)
+      autoStopTimer.current = null
+    }
+
+    let recordingUri: string | null = null
+    setIsRecording(false)
+    setIsTranscribing(true)
+
+    try {
+      const recordingDuration = recordingStartedAt.current
+        ? Date.now() - recordingStartedAt.current
+        : 0
+      try {
+        await recorder.stop()
+      } finally {
+        recordingUri = recorder.uri
+        recordingUriRef.current = recordingUri
+      }
+      if (recordingDuration < 350) {
+        throw new Error("That recording was too short. Please speak in English and try again.")
+      }
+      if (!recordingUri) {
+        throw new Error("No recording was created. Please try again.")
+      }
+
+      if (meteringAvailable.current && !speechDetected.current) {
+        throw new Error("I didn't detect speech. Please speak in English and try again.")
+      }
+
+      const audioFile = new File(recordingUri)
+      if (!audioFile.exists || !audioFile.size) {
+        throw new Error("The recording was empty. Please try speaking and record again.")
+      }
+
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) throw new Error("Please sign in again before using voice input.")
+
+      const recordingPath = recordingUri.toLowerCase().split("?")[0]
+      const mimeType = recordingPath.endsWith(".webm")
+        ? "audio/webm"
+        : recordingPath.endsWith(".m4a")
+          ? "audio/m4a"
+          : recordingPath.endsWith(".aac")
+            ? "audio/aac"
+            : "audio/m4a"
+      const response = await fetch(`${process.env.EXPO_PUBLIC_API_URL}/transcribe`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          "Content-Type": mimeType,
+          "X-Audio-Mime-Type": mimeType,
+        },
+        body: audioFile,
+      })
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        const detail = typeof result.detail === "string" ? result.detail : ""
+        if (
+          response.status === 422 &&
+          detail.toLowerCase().includes("couldn't hear any words")
+        ) {
+          Alert.alert("No speech detected", "I couldn't hear any words. Please speak and try again.")
+          return
+        }
+
+        console.error("Voice transcription request failed", {
+          status: response.status,
+          detail,
+          mimeType,
+          audioBytes: audioFile.size,
+        })
+        throw new Error(detail || "Transcription failed. Please try again.")
+      }
+
+      const transcript = typeof result.text === "string" ? result.text.trim() : ""
+      if (!transcript) {
+        throw new Error("I couldn't hear any words. Please try recording again.")
+      }
+
+      setChatInput((previous) => {
+        const existing = previous.trimEnd()
+        return existing ? `${existing} ${transcript}` : transcript
+      })
+    } catch (error) {
+      Alert.alert(
+        "Voice input",
+        error instanceof Error ? error.message : "Transcription failed. Please try again."
+      )
+    } finally {
+      if (recordingUri) {
+        try {
+          const tempFile = new File(recordingUri)
+          if (tempFile.exists) tempFile.delete()
+        } catch (error) {
+          console.warn("Could not delete temporary voice recording", error)
+        }
+        recordingUriRef.current = null
+      }
+      await setAudioModeAsync({ allowsRecording: false }).catch(() => undefined)
+      setIsTranscribing(false)
+      setRecordingSeconds(0)
+      recordingStartedAt.current = null
+      stopInProgress.current = false
+    }
+  }
+
+  const startRecording = async () => {
+    if (sending || isTranscribing || stopInProgress.current) return
+
+    try {
+      const permission = await requestRecordingPermissionsAsync()
+      if (!permission.granted) {
+        Alert.alert("Microphone access", "Allow microphone access to use voice input.")
+        return
+      }
+
+      await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true })
+      await recorder.prepareToRecordAsync()
+      recorder.record()
+      recordingUriRef.current = recorder.uri ?? null
+      recordingStartedAt.current = Date.now()
+      meteringAvailable.current = false
+      speechDetected.current = false
+      setRecordingSeconds(0)
+      setIsRecording(true)
+      autoStopTimer.current = setTimeout(() => {
+        void transcribeRecording()
+      }, MAX_RECORDING_MS)
+    } catch (error) {
+      await setAudioModeAsync({ allowsRecording: false }).catch(() => undefined)
+      Alert.alert(
+        "Voice input",
+        error instanceof Error ? error.message : "Could not start recording. Please try again."
+      )
+    }
+  }
 
   const sendMessage = async (text: string) => {
   const trimmed = text.trim()
 
-  if (!trimmed || sending) return
+  if (!trimmed || sending || isRecording || isTranscribing) return
 
   const userMessage: ChatMessage = {
     id: `u${Date.now()}`,
@@ -375,46 +590,83 @@ const [chatActive, setChatActive] = useState(
           },
         ]}
       >
-        <TextInput
-          autoFocus={Boolean(prefill)}
-          value={chatInput}
-          onChangeText={setChatInput}
-          onSubmitEditing={() => sendMessage(chatInput)}
-          returnKeyType="send"
-          placeholder="Add a task or ask anything..."
-          placeholderTextColor={t.muted}
-          style={[
-            styles.input,
-            {
-              backgroundColor: t.surface,
-              color: t.text,
-              borderColor: t.border,
-            },
-          ]}
-        />
+        {(isRecording || isTranscribing) && (
+          <View style={styles.voiceStatus} accessibilityLiveRegion="polite">
+            {isRecording ? (
+              <>
+                <View style={styles.recordingDot} />
+                <Text style={[styles.voiceStatusText, { color: t.risk }]}>
+                  Recording {formatRecordingTime(recordingSeconds)} / 01:00 · Tap mic to stop
+                </Text>
+              </>
+            ) : (
+              <>
+                <ActivityIndicator size="small" color={t.primary} />
+                <Text style={[styles.voiceStatusText, { color: t.muted }]}>Transcribing…</Text>
+              </>
+            )}
+          </View>
+        )}
 
-        <Pressable
-          onPress={() => sendMessage(chatInput)}
-          style={({ pressed }) => [
-            styles.sendButton,
-            {
-              backgroundColor: chatInput.trim()
-                ? t.primary
-                : t.surface2,
-              opacity: pressed ? 0.8 : 1,
-            },
-          ]}
-          accessibilityLabel="Send"
-        >
-          <Send
-            size={17}
-            color={
-              chatInput.trim()
-                ? "#FFFFFF"
-                : t.muted
-            }
+        <View style={styles.inputRow}>
+          <TextInput
+            autoFocus={Boolean(prefill)}
+            value={chatInput}
+            onChangeText={setChatInput}
+            onSubmitEditing={() => sendMessage(chatInput)}
+            returnKeyType="send"
+            editable={!isTranscribing}
+            placeholder="Add a task or ask anything..."
+            placeholderTextColor={t.muted}
+            style={[
+              styles.input,
+              {
+                backgroundColor: t.surface,
+                color: t.text,
+                borderColor: t.border,
+              },
+            ]}
           />
-        </Pressable>
+
+          <Pressable
+            onPress={isRecording ? transcribeRecording : startRecording}
+            disabled={sending || isTranscribing}
+            style={({ pressed }) => [
+              styles.voiceButton,
+              {
+                backgroundColor: isRecording ? t.risk : t.surface2,
+                opacity: pressed || sending || isTranscribing ? 0.65 : 1,
+              },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel={isRecording ? "Stop recording" : "Start voice input in English"}
+            accessibilityState={{ disabled: sending || isTranscribing }}
+          >
+            <Mic size={18} color={isRecording ? "#FFFFFF" : t.text} />
+          </Pressable>
+
+          <Pressable
+            onPress={() => sendMessage(chatInput)}
+            disabled={!chatInput.trim() || sending || isRecording || isTranscribing}
+            style={({ pressed }) => [
+              styles.sendButton,
+              {
+                backgroundColor: chatInput.trim() ? t.primary : t.surface2,
+                opacity: pressed ? 0.8 : 1,
+              },
+            ]}
+            accessibilityLabel="Send"
+            accessibilityState={{ disabled: !chatInput.trim() || sending || isRecording || isTranscribing }}
+          >
+            <Send
+              size={17}
+              color={chatInput.trim() ? "#FFFFFF" : t.muted}
+            />
+          </Pressable>
+        </View>
+        <Text style={[styles.voiceHint, { color: t.muted }]}>
+          Voice input supports English · up to 60 seconds
+        </Text>
       </View>
     </KeyboardAvoidingView>
   )
@@ -551,12 +803,40 @@ const styles = StyleSheet.create({
 
   // Input
   inputContainer: {
-    flexDirection: "row",
-    alignItems: "center",
+    flexDirection: "column",
     gap: 8,
     paddingHorizontal: 20,
     paddingTop: 16,
     borderTopWidth: 1,
+  },
+
+  inputRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+
+  voiceStatus: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    minHeight: 20,
+  },
+
+  voiceStatusText: {
+    fontSize: 12,
+  },
+
+  voiceHint: {
+    fontSize: 10.5,
+    paddingLeft: 2,
+  },
+
+  recordingDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#D92D20",
   },
 
   input: {
@@ -570,6 +850,14 @@ const styles = StyleSheet.create({
   },
 
   sendButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  voiceButton: {
     width: 42,
     height: 42,
     borderRadius: 12,

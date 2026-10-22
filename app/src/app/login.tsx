@@ -89,7 +89,7 @@ export default function LoginScreen() {
                 },
               ]}
             >
-              Focal
+              Sorted
             </Text>
           </View>
 
@@ -349,4 +349,3 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 })
-

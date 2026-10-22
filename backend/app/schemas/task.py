@@ -2,6 +2,8 @@ from typing import Optional, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.services.recurrence import validate_task_recurrence
+
 
 class TaskCreate(BaseModel):
     title: str
@@ -57,6 +59,10 @@ class TaskCreate(BaseModel):
             raise ValueError(
                 "recurrence and recurrence_end require is_recurring=true."
             )
+
+        if self.is_recurring:
+            recurrence = validate_task_recurrence(self.model_dump())
+            self.recurrence = recurrence
 
         return self
 

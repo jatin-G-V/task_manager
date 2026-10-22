@@ -23,6 +23,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
   parseInstant,
+  recurrenceRuleParts,
   recurrenceLabel,
   timingLabel,
 } from "../utils/taskFormat";
@@ -82,28 +83,30 @@ function recurrenceKind(task: Task): RecurrenceKind {
   if (!task.isRecurring || !task.recurrence) {
     return "none";
   }
-  const value = task.recurrence.toLowerCase();
-  if (value === "daily") return "daily";
-  if (value === "monthly") return "monthly";
-  if (value.startsWith("weekly on ")) return "weekly";
+  const rule = recurrenceRuleParts(task.recurrence);
+  if (!rule || rule.interval !== 1) return "custom";
+  const supportedFields = new Set(["FREQ", "INTERVAL", "BYDAY"]);
+  if (Object.keys(rule.fields).some((field) => !supportedFields.has(field))) {
+    return "custom";
+  }
+  if (rule.frequency === "DAILY") return "daily";
+  if (rule.frequency === "MONTHLY") return "monthly";
+  if (rule.frequency === "WEEKLY") return "weekly";
   return "custom";
 }
 function recurrenceDays(task: Task) {
-  if (
-    !task.recurrence
-      ?.toLowerCase()
-      .startsWith("weekly on ")
-  ) {
-    return [];
+  const rule = recurrenceRuleParts(task.recurrence);
+  if (rule?.frequency !== "WEEKLY") return [];
+  const value = rule.days;
+  if (value.length === 0) {
+    const anchor = parseInstant(task.scheduledStart ?? task.deadline);
+    if (!anchor) return [];
+    const weekdayCode = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"][anchor.getDay()];
+    value.push(weekdayCode);
   }
-  const value = task.recurrence
-    .replace(/^weekly on /i, "")
-    .replace(" and ", ", ")
-    .split(",")
-    .map((day) => day.trim().toLowerCase());
   return weekDays
     .filter((day) =>
-      value.includes(day.full.toLowerCase()),
+      value.includes(day.short.toUpperCase()),
     )
     .map((day) => day.full);
 }

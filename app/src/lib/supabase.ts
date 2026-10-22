@@ -6,26 +6,14 @@ import { Platform } from 'react-native';
 
 const ExpoSafeStorage = {
   getItem: (key: string) => {
-    if (Platform.OS === 'web' && typeof window === 'undefined') {
-      return Promise.resolve(null);
-    }
-
     return AsyncStorage.getItem(key);
   },
 
   setItem: (key: string, value: string) => {
-    if (Platform.OS === 'web' && typeof window === 'undefined') {
-      return Promise.resolve();
-    }
-
     return AsyncStorage.setItem(key, value);
   },
 
   removeItem: (key: string) => {
-    if (Platform.OS === 'web' && typeof window === 'undefined') {
-      return Promise.resolve();
-    }
-
     return AsyncStorage.removeItem(key);
   },
 };
