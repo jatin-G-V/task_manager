@@ -147,7 +147,7 @@ def _build_rule(rule: str, anchor: datetime):
             if any(day > 28 for day in days):
                 parts["BYMONTHDAY"] = "28,29,30,31"
                 parts["BYSETPOS"] = "-1"
-        else:
+        elif not parts.get("BYDAY"):
             parts["BYMONTHDAY"] = str(anchor.day)
             if anchor.day > 28:
                 parts["BYMONTHDAY"] = "28,29,30,31"
@@ -165,7 +165,10 @@ def _build_rule(rule: str, anchor: datetime):
         raise ValueError("I couldn't understand that repeating schedule. Please choose a supported pattern.") from exc
 
 
-def validate_task_recurrence(task: dict) -> str | None:
+def validate_task_recurrence(
+    task: dict,
+    check_first_date: bool = True,
+) -> str | None:
     """Validate and return a canonical RRULE for a recurring task."""
     if not task.get("is_recurring"):
         return None
@@ -180,16 +183,69 @@ def validate_task_recurrence(task: dict) -> str | None:
     if not start and not deadline:
         raise ValueError("A repeating task needs a start time or a deadline")
 
-    first_value = start or deadline
-    first = to_local(first_value).replace(tzinfo=None)
-    generated = _build_rule(canonical, first).after(first - timedelta(microseconds=1), inc=True)
-    if generated != first:
-        raise ValueError("The first date must match the repeating pattern.")
+    if check_first_date:
+        first_value = start or deadline
+        first = to_local(first_value).replace(tzinfo=None)
+        generated = _build_rule(canonical, first).after(
+            first - timedelta(microseconds=1),
+            inc=True,
+        )
+        if generated != first:
+            raise ValueError("The first date must match the repeating pattern.")
     return canonical
 
 
 def _local_iso(value: datetime) -> str:
     return value.replace(tzinfo=APP_TZ).isoformat()
+
+
+def snap_first_occurrence(parsed: dict) -> dict:
+    """Move a recurring task's first date forward to its first matching date.
+
+    The parser sometimes returns a date that conflicts with the requested
+    recurrence pattern. Preserve its local time and, for scheduled tasks, the
+    task's duration while moving it to the first occurrence on or after it.
+    """
+    result = dict(parsed)
+    if not parsed.get("is_recurring"):
+        return result
+
+    start_field = (
+        "scheduled_start"
+        if parsed.get("schedule_type") == "scheduled"
+        else "deadline"
+    )
+    first_value = parsed.get(start_field)
+    if not first_value:
+        return result
+
+    recurrence = parsed.get("recurrence")
+    if not recurrence:
+        return result
+
+    try:
+        canonical = _canonical_rule(recurrence)
+        validate_rule(canonical)
+        first = to_local(first_value).replace(tzinfo=None)
+        generated = _build_rule(canonical, first).after(
+            first - timedelta(microseconds=1),
+            inc=True,
+        )
+    except (ValueError, TypeError, OverflowError):
+        return result
+
+    if generated is None or generated == first:
+        return result
+
+    delta = generated - first
+    result[start_field] = _local_iso(generated)
+    if start_field == "scheduled_start" and parsed.get("scheduled_end"):
+        try:
+            end = to_local(parsed["scheduled_end"]).replace(tzinfo=None)
+            result["scheduled_end"] = _local_iso(end + delta)
+        except (ValueError, TypeError, OverflowError):
+            return dict(parsed)
+    return result
 
 
 def next_occurrence(task: dict, completed_at: datetime) -> dict | None:
@@ -276,6 +332,7 @@ __all__ = [
     "legacy_to_rrule",
     "next_occurrence",
     "rrule_to_text",
+    "snap_first_occurrence",
     "validate_rule",
     "validate_task_recurrence",
 ]

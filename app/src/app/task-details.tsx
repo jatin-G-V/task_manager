@@ -166,12 +166,29 @@ export default function TaskDetailScreen() {
   const repeat = recurrenceLabel(task);
   const save = async (
     updates: Parameters<typeof updateTask>[2],
-  ) => {
+  ): Promise<boolean> => {
     try {
       await updateTask(task.id, task.section, updates);
+      return true;
     } catch (error) {
-      console.error('Failed to update task:', error);
-      Alert.alert('Could not save changes', 'Please try again.');
+      const message =
+        error instanceof Error ? error.message : '';
+      if (
+        message.toLowerCase().includes(
+          'first date must match the repeating pattern',
+        )
+      ) {
+        Alert.alert(
+          'Repeat date does not match',
+          'Choose a start date that falls on the selected repeat day, or change the repeat pattern.',
+        );
+      } else {
+        Alert.alert(
+          'Could not save changes',
+          'Please try again.',
+        );
+      }
+      return false;
     }
   };
   const rejectPast = (date: Date) => {
@@ -1151,9 +1168,10 @@ export default function TaskDetailScreen() {
         onClose={() =>
           setRecurrenceEditorOpen(false)
         }
-        onSave={(updates) => {
-          save(updates);
-          setRecurrenceEditorOpen(false);
+        onSave={async (updates) => {
+          if (await save(updates)) {
+            setRecurrenceEditorOpen(false);
+          }
         }}
       />
     </SafeAreaView>

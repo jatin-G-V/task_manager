@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from typing import Optional
 import logging
 import re
+import uuid
 from uuid import NAMESPACE_URL, uuid5
 
 from rapidfuzz import fuzz
@@ -126,6 +127,11 @@ def create_task(user_id: str, data: dict) -> dict:
 
 def get_task(user_id: str, task_id: str) -> Optional[dict]:
     try:
+        uuid.UUID(str(task_id))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+    try:
         result = (
             supabase
             .table("tasks")
@@ -204,9 +210,15 @@ def update_task(user_id: str, task_id: str, updates: dict) -> dict:
     recurrence_fields = {"recurrence", "scheduled_start", "deadline", "is_recurring"}
     recurrence_changed = bool(recurrence_fields & set(updates))
     if merged.get("is_recurring") and recurrence_changed:
-        merged_recurrence = validate_task_recurrence(merged)
+        pattern_changed = bool({"recurrence", "is_recurring"} & set(updates))
+        pattern_changed = pattern_changed or not existing.get("is_recurring")
+        merged_recurrence = validate_task_recurrence(
+            merged,
+            check_first_date=pattern_changed,
+        )
         if "recurrence" in updates or not existing.get("is_recurring"):
             updates = {**updates, "recurrence": merged_recurrence}
+        # Editing one occurrence changes only that row; the next occurrence is computed from recurrence_anchor, so a changed time of day does not carry forward.
         # A deliberate pattern change starts a new series from its selected
         # first date. Ordinary occurrence edits keep the original anchor.
         if "recurrence" in updates or not existing.get("is_recurring"):
@@ -233,6 +245,15 @@ def update_task(user_id: str, task_id: str, updates: dict) -> dict:
 
     return result.data[0]
 
+def _valid_ids(task_ids) -> list:
+    out = []
+    for value in task_ids or []:
+        try:
+            uuid.UUID(str(value))
+            out.append(str(value))
+        except (ValueError, AttributeError, TypeError):
+            pass
+    return out
 
 def _ensure_next_occurrence(user_id: str, completed_task: dict) -> Optional[dict]:
     if not completed_task.get("is_recurring") or not completed_task.get("recurrence"):
@@ -333,6 +354,7 @@ def _ensure_next_occurrence(user_id: str, completed_task: dict) -> Optional[dict
 
 
 def complete_tasks(user_id: str, task_ids: list) -> list:
+    task_ids = _valid_ids(task_ids)
     if not task_ids:
         return []
 
@@ -378,6 +400,7 @@ def complete_tasks(user_id: str, task_ids: list) -> list:
 
 
 def delete_tasks(user_id: str, task_ids: list) -> list:
+    task_ids = _valid_ids(task_ids)
     result = (
         supabase
         .table("tasks")
@@ -561,7 +584,14 @@ def _validate_not_in_past(
                 "recurrence and recurrence_end require is_recurring=true."
             )
     elif changed_fields is None or {"recurrence", "scheduled_start", "deadline", "is_recurring"} & changed_fields:
-        data["recurrence"] = validate_task_recurrence(data)
+        pattern_changed = (
+            changed_fields is None
+            or bool({"recurrence", "is_recurring"} & changed_fields)
+        )
+        data["recurrence"] = validate_task_recurrence(
+            data,
+            check_first_date=pattern_changed,
+        )
 
     # --------------------------------------------------
     # Schedule consistency

@@ -5,6 +5,7 @@ import pytest
 from app.services.recurrence import (
     legacy_to_rrule,
     next_occurrence,
+    snap_first_occurrence,
     validate_rule,
     validate_task_recurrence,
 )
@@ -127,6 +128,83 @@ def test_first_occurrence_must_match_rule():
     task = _scheduled_task("2026-10-20T09:00:00+05:30", "FREQ=WEEKLY;BYDAY=MO")
     with pytest.raises(ValueError, match="first date must match"):
         validate_task_recurrence(task)
+
+
+def test_rescheduled_weekly_occurrence_keeps_original_series_anchor():
+    task = _scheduled_task(
+        "2026-10-19T09:00:00+05:30",
+        "FREQ=WEEKLY;BYDAY=MO",
+    )
+    task["scheduled_start"] = "2026-10-21T11:00:00+05:30"
+
+    assert validate_task_recurrence(task, check_first_date=False) == "FREQ=WEEKLY;BYDAY=MO"
+    with pytest.raises(ValueError, match="first date must match"):
+        validate_task_recurrence(task)
+
+    following = _next(task, "2026-10-21T12:00:00+05:30")
+    assert following["scheduled_start"] == "2026-10-26T09:00:00+05:30"
+
+
+def test_snap_first_occurrence_moves_weekly_date_to_next_matching_day():
+    parsed = {
+        "title": "Gym",
+        "schedule_type": "scheduled",
+        "scheduled_start": "2026-10-20T07:30:00+05:30",
+        "scheduled_end": "2026-10-20T08:15:00+05:30",
+        "is_recurring": True,
+        "recurrence": "FREQ=WEEKLY;BYDAY=MO",
+    }
+
+    snapped = snap_first_occurrence(parsed)
+
+    assert snapped["scheduled_start"] == "2026-10-26T07:30:00+05:30"
+    assert snapped["scheduled_end"] == "2026-10-26T08:15:00+05:30"
+    assert parsed["scheduled_start"] == "2026-10-20T07:30:00+05:30"
+
+
+def test_snap_first_occurrence_leaves_matching_date_unchanged():
+    parsed = {
+        "schedule_type": "scheduled",
+        "scheduled_start": "2026-10-19T07:30:00+05:30",
+        "is_recurring": True,
+        "recurrence": "FREQ=WEEKLY;BYDAY=MO",
+    }
+
+    assert snap_first_occurrence(parsed) == parsed
+
+
+def test_snap_first_occurrence_supports_monthly_rules():
+    parsed = {
+        "schedule_type": "scheduled",
+        "scheduled_start": "2026-10-20T07:30:00+05:30",
+        "is_recurring": True,
+        "recurrence": "FREQ=MONTHLY;BYDAY=MO",
+    }
+
+    snapped = snap_first_occurrence(parsed)
+
+    assert snapped["scheduled_start"] == "2026-10-26T07:30:00+05:30"
+
+
+def test_snap_first_occurrence_leaves_invalid_rule_unchanged():
+    parsed = {
+        "schedule_type": "scheduled",
+        "scheduled_start": "2026-10-20T07:30:00+05:30",
+        "is_recurring": True,
+        "recurrence": "FREQ=WEEKLY;BYDAY=NOTADAY",
+    }
+
+    assert snap_first_occurrence(parsed) == parsed
+
+
+def test_snap_first_occurrence_leaves_non_recurring_task_unchanged():
+    parsed = {
+        "schedule_type": "scheduled",
+        "scheduled_start": "2026-10-20T07:30:00+05:30",
+        "is_recurring": False,
+    }
+
+    assert snap_first_occurrence(parsed) == parsed
 
 
 @pytest.mark.parametrize(

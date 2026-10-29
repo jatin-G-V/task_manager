@@ -11,6 +11,7 @@ from app.auth import get_current_user
 from app.services.task_parser import parse_task_text
 from app.routers.tasks import router as tasks_router
 from app.services.agent import run_agent
+from app.services.agent_tools import clear_user_pending
 
 
 app = FastAPI()
@@ -238,5 +239,17 @@ class ChatRequest(BaseModel):
 
 @app.post("/agent/chat")
 def agent_chat(req: ChatRequest, user_id: str = Depends(get_current_user)):
+    has_assistant_history = any(
+        isinstance(message, dict) and message.get("role") == "assistant"
+        for message in req.messages
+    )
+    logger.info(
+        "CHAT start messages=%d fresh_chat=%s",
+        len(req.messages),
+        not has_assistant_history,
+    )
+    if not has_assistant_history:
+        clear_user_pending(user_id)
     reply, tasks_changed = run_agent(user_id, req.messages)
+    logger.info("CHAT done tasks_changed=%s reply_chars=%d", tasks_changed, len(reply))
     return {"reply": reply, "tasks_changed": tasks_changed}

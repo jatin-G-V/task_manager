@@ -1,6 +1,7 @@
 import time
 import json
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import Optional, Literal
 
@@ -163,35 +164,79 @@ Examples:
 Always resolve relative expressions using the current date and time
 provided at the top. Never use dates from examples as the current date.
 
-"in 2 hours" / "in 30 minutes" -> current datetime + that duration
-"90 minutes from now" -> current datetime + 90 minutes
-"tomorrow" -> tomorrow's calendar day
-"this week" -> the current calendar week (Monday to Sunday)
-"next week" -> the following calendar week (Monday to Sunday)
-"this month" -> the current calendar month
-"next month" -> the following calendar month
-"end of the month" -> 23:59:59 on the last day of the current month
-"end of next month" -> 23:59:59 on the last day of the following month
+The CURRENT CONTEXT message is the single source of truth for the current
+date, time, weekday, and timezone. Calculate every relative date from it.
+Do not rely on memorized dates, the model's internal clock, or dates in
+examples.
+
+DATE RESOLUTION RULES
+
+- "in 2 hours" / "in 30 minutes" -> current datetime + that duration
+- "90 minutes from now" -> current datetime + 90 minutes
+- "tomorrow" -> tomorrow's calendar day
+- "this week" -> the current calendar week (Monday to Sunday)
+- "next week" -> the following calendar week (Monday to Sunday)
+- "this month" -> the current calendar month
+- "next month" -> the following calendar month
+- "end of the month" -> 23:59:59 on the last day of the current month
+- "end of next month" -> 23:59:59 on the last day of the following month
 
 WEEKDAY NAMES (Monday to Sunday)
 
 Weeks always run Monday to Sunday.
 
-"Friday" / "this Friday" -> the upcoming Friday within the current
-   calendar week. If today is that weekday, use today if the time has not
-   passed; otherwise use the next occurrence.
-   If that weekday has already passed in the current calendar week, use
-   the next occurrence of it.
-"next Friday" -> the Friday of the FOLLOWING calendar week (the week that
-   starts on the next Monday). It is never the Friday of the current week.
-   The same rule applies to every weekday: "next Monday", "next Tuesday",
-   and so on always mean that weekday in the following calendar week.
+Apply these rules consistently. Do not treat "next Friday" as equivalent
+to "Friday", and do not shift a date by one day without a reason.
 
-Example (pretend today is Wednesday 2031-03-12):
+- "Friday" / "this Friday" -> the upcoming Friday within the current
+  calendar week. If today is that weekday, use today if the time has not
+  passed; otherwise use the next occurrence.
+  If that weekday has already passed in the current calendar week, use
+  the next occurrence of it.
+
+- "next Friday" -> the Friday of the FOLLOWING calendar week (the week that
+  starts on the next Monday). It is never the Friday of the current week.
+  The same rule applies to every weekday: "next Monday", "next Tuesday",
+  and so on always mean that weekday in the following calendar week.
+
+- For "next <weekday>", first find the Monday of the current calendar week,
+  then add 7 days and the target weekday offset (Monday = 0, Tuesday = 1,
+  Wednesday = 2, Thursday = 3, Friday = 4, Saturday = 5, Sunday = 6).
+  The resulting date is the required target date.
+
+- After resolving a weekday phrase, verify that the returned calendar date
+  actually falls on the requested weekday. Verify the year, month, and day
+  separately from the clock time.
+
+- Preserve the resolved date when adding a time such as "at 5 PM".
+  Adding or interpreting a clock time must never change Friday to Saturday
+  or otherwise shift the calendar date.
+
+- For "by next Friday at 5 PM", the deadline must be 5 PM on the Friday of
+  the following calendar week. Do not interpret it as Saturday, and do not
+  substitute the Friday of the current week.
+
+Examples (pretend today is Wednesday 2031-03-12):
 "Friday" / "this Friday" -> 2031-03-14
 "next Friday" -> 2031-03-21
 "next Monday" -> 2031-03-17
 "Wednesday" -> 2031-03-12 if the time has not passed, else 2031-03-19
+"by next Friday at 5 PM" -> 2031-03-21T17:00:00 with the configured timezone offset
+"by next Saturday at 5 PM" -> 2031-03-22T17:00:00 with the configured timezone offset
+
+DATE AND TIME VALIDATION
+
+Before returning any date or datetime:
+1. Identify the exact date phrase in the user's input.
+2. Resolve the calendar date using CURRENT CONTEXT.
+3. Identify any explicit clock time and apply it to that date.
+4. Check that the final date matches the requested weekday, if one was
+   specified.
+5. Check that the final hour and minute match the user's stated time.
+6. Ensure that the final date has not drifted to the following or preceding
+   day during conversion or formatting.
+
+Do not copy dates from examples. Examples demonstrate rules only.
 
 A phrase such as "tomorrow", "this week", or "tonight" is NOT automatically
 a deadline or scheduled time. Its role depends on what the action means.
@@ -212,7 +257,6 @@ All dates and times are in the timezone given above. Every datetime you
 return MUST be ISO-8601 with that UTC offset, for example
 2031-03-12T15:00:00+05:30. Never return Z or +00:00 and never return a
 datetime without an offset.
-
 
 --------------------------------------------------
 4. NATURAL PERIOD BOUNDARIES
@@ -268,8 +312,8 @@ A scheduled task is an activity or commitment intended to happen at a
 specific time or time window. Examples: meeting, call, exercise, meal,
 errand, chore, event, recreational activity.
 
-The distinction is about the meaning of the ACTION, not simply whether a
-date or time was mentioned.
+The distinction is about the meaning of the ACTION, not simply whether
+a date or time was mentioned.
 
 GENERAL HEURISTIC
 
@@ -713,14 +757,14 @@ Before returning the JSON, verify the relationships between fields.
    - estimated_time_minutes must equal duration.
 
 10. If duration is null:
-   - estimated_time_minutes should contain a reasonable AI estimate for a
-     valid task.
-   - estimated_time_minutes should be null only when reliable estimation is
-     genuinely impossible.
+    - estimated_time_minutes should contain a reasonable AI estimate for a
+      valid task.
+    - estimated_time_minutes should be null only when reliable estimation is
+      genuinely impossible.
 
 11. If duration is not null and has_explicit_time = true:
-   - scheduled_end must equal scheduled_start + duration unless the user
-     explicitly supplied a conflicting end time.
+    - scheduled_end must equal scheduled_start + duration unless the user
+      explicitly supplied a conflicting end time.
 
 12. Effort must not be derived mechanically from estimated time.
 
@@ -728,15 +772,15 @@ Before returning the JSON, verify the relationships between fields.
     effort, or duration.
 
 14. For non-task input:
-   - is_task = false
-   - all other fields = null
+    - is_task = false
+    - all other fields = null
 
 15. has_explicit_time:
-   - true only for an exact clock time or a relative offset that resolves
-     to one instant.
-   - false when a date or period is given without a precise moment,
-     including deadlines that end at 23:59:59 or 00:00:00 by rule.
-   - null when there is no date or time information at all.
+    - true only for an exact clock time or a relative offset that resolves
+      to one instant.
+    - false when a date or period is given without a precise moment,
+      including deadlines that end at 23:59:59 or 00:00:00 by rule.
+    - null when there is no date or time information at all.
 
 16. brief must be null unless it adds information that is not in the
     title or in any other field. It must never contain timing information
@@ -849,6 +893,59 @@ def _normalize(d: dict, now) -> dict:
     return d
 
 
+_WEEKDAY_INDEX = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
+
+
+def _correct_next_weekday(parsed: dict, raw_text: str, now) -> dict:
+    """Keep an explicit 'next <weekday>' on that weekday if the model drifts."""
+    matches = re.findall(
+        r"\bnext\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+        raw_text,
+        flags=re.IGNORECASE,
+    )
+    if len(matches) != 1:
+        return parsed
+
+    anchor_field = "scheduled_start" if parsed.get("scheduled_start") else "deadline"
+    anchor_value = parsed.get(anchor_field)
+    if not anchor_value:
+        return parsed
+
+    try:
+        anchor = parse_model_dt(anchor_value)
+    except (TypeError, ValueError):
+        return parsed
+    if not anchor:
+        return parsed
+
+    weekday = _WEEKDAY_INDEX[matches[0].lower()]
+    current_week_monday = now.date() - timedelta(days=now.weekday())
+    target_date = current_week_monday + timedelta(days=7 + weekday)
+    day_shift = (target_date - anchor.date()).days
+    if day_shift == 0:
+        return parsed
+
+    corrected = dict(parsed)
+    for field in ("scheduled_start", "scheduled_end", "deadline"):
+        if not corrected.get(field):
+            continue
+        try:
+            value = parse_model_dt(corrected[field])
+        except (TypeError, ValueError):
+            continue
+        if value:
+            corrected[field] = (value + timedelta(days=day_shift)).isoformat()
+    return corrected
+
+
 def _related_message(candidates: list) -> str:
     lines = "\n".join(
         f"{c['id']} | {c['title']} | "
@@ -923,6 +1020,7 @@ def parse_task_text(raw_text: str) -> dict:
         )
 
     result = _normalize(parsed.model_dump(), now)
+    result = _correct_next_weekday(result, raw_text, now)
     result.pop("related", None)   # never a database column
     return result
 
@@ -997,6 +1095,7 @@ def parse_task_texts(raw_texts: list[str]) -> list[dict]:
         for index in range(len(raw_texts)):
             parsed = ParsedTask(**by_index[index]).model_dump()
             parsed = _normalize(parsed, now)
+            parsed = _correct_next_weekday(parsed, raw_texts[index], now)
             parsed.pop("related", None)
             parsed_items.append(parsed)
         return parsed_items

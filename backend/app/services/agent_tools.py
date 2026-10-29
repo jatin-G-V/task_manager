@@ -9,7 +9,7 @@ from app.services import task_service
 from app.services.clash import find_clashes
 from app.services.dedupe import judge, shortlist
 from app.services.recommendation import PINNED_WINDOW_MIN
-from app.services.recurrence import next_occurrence, rrule_to_text
+from app.services.recurrence import next_occurrence, rrule_to_text, snap_first_occurrence
 from app.services.task_parser import parse_task_text, parse_task_texts
 from app.services.taskfmt import clock, day_word, when_text
 from app.services.timeutil import normalize_model_dt, now_local, to_local
@@ -23,10 +23,15 @@ PENDING_TTL_SECONDS = 600
 
 # Decisions waiting for the user, per user:
 #   user_id -> {"expires": <timestamp>, "queue": [conflict, ...]}
-# In memory, so it only works with ONE server worker. If you run several workers,
-# move this into a small table (user_id, payload jsonb, expires_at).
+# In memory by design; lost on refresh or restart, and requires a single server worker.
 _pending = {}
 _delete_pending = {}
+
+
+def clear_user_pending(user_id: str) -> None:
+    """Clear this user's in-memory decisions when a new chat begins."""
+    _pending.pop(user_id, None)
+    _delete_pending.pop(user_id, None)
 
 # fields that define WHEN a task happens (used by "move the existing task")
 TIME_FIELDS = (
@@ -224,7 +229,7 @@ def _question(conflict: dict, remaining: int) -> str:
     if conflict["relation"] == "part_of":
         text = (
             f"{new} sounds like part of your existing {target}. "
-            "Add it inside that task, or keep it as a separate task?"
+            "Add it inside that task, keep it as a separate task, or skip it?"
         )
     else:
         if conflict.get("new_when") == conflict.get("target", {}).get("when"):
@@ -375,6 +380,7 @@ def add_tasks(user_id: str, args: dict) -> dict:
             continue
 
         parsed.pop("related", None)
+        parsed = snap_first_occurrence(parsed)
         title = parsed.get("title") or text
 
         # Reject impossible dates before duplicate detection. Otherwise an old
@@ -525,7 +531,8 @@ def add_tasks(user_id: str, args: dict) -> dict:
 
 _ALLOWED = {
     "duplicate": {"keep_existing", "update_existing", "add_separate"},
-    "part_of": {"merge", "add_separate"},
+    # keep_existing = skip the new task and leave the existing one unchanged
+    "part_of": {"merge", "add_separate", "keep_existing"},
     "schedule_clash": {"keep_existing", "add_anyway", "reschedule_new"},
     "past_time": {"reschedule_new", "cancel"},
 }
@@ -766,7 +773,13 @@ def resolve_pending(user_id: str, args: dict) -> dict:
     title = conflict["title"]
 
     if choice == "keep_existing":
-        done = f"Okay, I kept {_quoted(target['title'])} as it is."
+        if conflict["relation"] == "part_of":
+            done = (
+                f"Okay, I didn't add {_quoted(title)} and left "
+                f"{_quoted(target['title'])} as it is."
+            )
+        else:
+            done = f"Okay, I kept {_quoted(target['title'])} as it is."
 
     elif choice == "update_existing":
         updates = {field: parsed.get(field) for field in TIME_FIELDS}
@@ -1309,6 +1322,26 @@ def daily_digest(user_id: str, args: dict) -> dict:
 
 
 # ============================================================
+# decline_request (off-topic questions and features the app lacks)
+# ============================================================
+
+def decline_request(user_id: str, args: dict) -> dict:
+    """Fixed reply, so the model can never answer trivia or fake a feature."""
+    if args.get("kind") == "unsupported_feature":
+        reply = (
+            "This app doesn't have reminders or notifications yet. "
+            "I can add it as a task with a time instead, for example "
+            "\u201cCall Amit tomorrow at 4 PM\u201d."
+        )
+    else:
+        reply = (
+            "I can only help with your tasks and schedule, so I can't help with that. "
+            "Want to add a task or see what to do next?"
+        )
+    return {"status": "declined", "reply": reply}
+
+
+# ============================================================
 # Tool schemas
 # ============================================================
 
@@ -1553,6 +1586,30 @@ TOOLS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "decline_request",
+            "description": (
+                "Call this INSTEAD of answering when the user's message is not about managing their own tasks: "
+                "general knowledge or trivia (capitals, facts, news), maths, coding help, writing or translation, "
+                "or advice unrelated to their tasks (kind=off_topic). Also call it with kind=unsupported_feature "
+                "when the user asks to set up a feature this app does not have: reminders, alarms, notification "
+                "settings, calendar sync (for example 'set a reminder 10 minutes before my meetings'). "
+                "The system writes the reply; never answer those requests yourself and never add a task for them. "
+                "Do NOT call it for greetings, for adding a task, or for questions about the user's own tasks and "
+                "schedule. A reminder about one specific thing, like 'remind me to call Amit tomorrow at 4', is a "
+                "normal task: use add_tasks."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["off_topic", "unsupported_feature"]},
+                },
+                "required": ["kind"]
+            }
+        }
+    },
 ]
 
 
@@ -1567,4 +1624,5 @@ TOOL_FUNCTIONS = {
     "recommend_task": recommend_task,
     "recommend_for_mood": recommend_for_mood,
     "daily_digest": daily_digest,
+    "decline_request": decline_request,
 }

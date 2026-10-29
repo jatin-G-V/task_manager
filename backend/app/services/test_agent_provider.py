@@ -10,7 +10,7 @@ import json
 import sys
 import time
 
-from app.services.agent import SYSTEM_PROMPT, _context_message
+from backend.app.services.agent1 import SYSTEM_PROMPT, _context_message
 from app.services.agent_client import (
     PRIMARY_ENABLED,
     PRIMARY_MODEL,
