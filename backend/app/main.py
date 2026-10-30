@@ -10,6 +10,9 @@ from app.db.supabase_client import supabase
 from app.auth import get_current_user
 from app.services.task_parser import parse_task_text
 from app.routers.tasks import router as tasks_router
+from app.routers.feedback import router as feedback_router
+from app.routers.settings import router as settings_router
+from app.services import recommend_reply, reply_writer
 from app.services.agent import run_agent
 from app.services.agent_tools import clear_user_pending
 
@@ -23,6 +26,11 @@ TRANSCRIPTION_MODEL = "gemini-3.5-transcribe"
 MAX_AUDIO_BYTES = 12 * 1024 * 1024
 
 app.include_router(tasks_router)
+app.include_router(feedback_router)
+app.include_router(settings_router)
+
+# lets the model say "another=true" for "something else"
+recommend_reply.install()
 
 
 @app.post("/transcribe")
@@ -231,11 +239,9 @@ def parse_task(
         )
 
 
-
-
-
 class ChatRequest(BaseModel):
     messages: list[dict]
+
 
 @app.post("/agent/chat")
 def agent_chat(req: ChatRequest, user_id: str = Depends(get_current_user)):
@@ -251,5 +257,10 @@ def agent_chat(req: ChatRequest, user_id: str = Depends(get_current_user)):
     if not has_assistant_history:
         clear_user_pending(user_id)
     reply, tasks_changed = run_agent(user_id, req.messages)
+
+    # Optional per-user style. Returns the reply unchanged unless the user saved
+    # a style note and the reply is a safe success/info message.
+    reply = reply_writer.polish(user_id, reply)
+
     logger.info("CHAT done tasks_changed=%s reply_chars=%d", tasks_changed, len(reply))
     return {"reply": reply, "tasks_changed": tasks_changed}

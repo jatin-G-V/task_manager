@@ -23,8 +23,10 @@ jiter==0.17.0
 multidict==6.8.0
 openai==3.29.0
 packaging==26.3
+pip-licenses==5.5.5
 pluggy==1.6.0
 postgrest==2.31.0
+prettytable==3.18.0
 propcache==0.5.2
 pycparser==3.0
 pydantic==2.13.5
@@ -48,5 +50,6 @@ truststore==0.10.4
 typing-inspection==0.4.4
 typing_extensions==4.16.0
 uvicorn==0.52.4
+wcwidth==0.9.3
 websockets==15.0.1
 yarl==1.24.5

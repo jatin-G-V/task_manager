@@ -1,4 +1,3 @@
-
 """LLM client for Sorted's chat agent.
 
 The chat agent uses Gemini through its OpenAI-compatible endpoint,
@@ -38,7 +37,8 @@ MAX_TOKENS = int(os.environ.get("AGENT_MAX_TOKENS", "2048"))
 REASONING_EFFORT = os.environ.get(
     "AGENT_REASONING_EFFORT", "off"
 ).strip().lower()
-TEMPERATURE = 0.2
+# Low temperature = steadier tool choice. Set AGENT_TEMPERATURE in .env to change.
+TEMPERATURE = float(os.environ.get("AGENT_TEMPERATURE", "0.3"))
 
 _primary: Optional[OpenAI] = None
 
@@ -65,11 +65,12 @@ if PROVIDER != "groq":
         )
         logger.info(
             "Agent primary provider=%s model=%s "
-            "timeout=%ss reasoning_effort=%s",
+            "timeout=%ss reasoning_effort=%s temperature=%s",
             PROVIDER,
             PRIMARY_MODEL,
             TIMEOUT_SECONDS,
             REASONING_EFFORT,
+            TEMPERATURE,
         )
 
 

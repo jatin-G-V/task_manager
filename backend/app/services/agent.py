@@ -3,18 +3,92 @@ import logging
 import re
 import time
 
-from app.services.agent_tools import TOOLS, TOOL_FUNCTIONS as _BASE_TOOL_FUNCTIONS
+from app.services.agent_tools import TOOLS as _BASE_TOOLS, TOOL_FUNCTIONS as _BASE_TOOL_FUNCTIONS
 from app.services.agent_client import chat, message_to_dict
 from app.services.recommend_reply import recommend_for_mood, recommend_task
 from app.services.timeutil import APP_TZ, now_local
 
 logger = logging.getLogger(__name__)
 
+
+# ------------------------------------------------------------
+# Text helpers
+# ------------------------------------------------------------
+
+def _plain_text(value: str) -> str:
+    """Remove common Markdown syntax before a plain-text chat bubble displays it."""
+    text = value or ""
+    # fenced code blocks -> keep the inner text
+    text = re.sub(r"```(?:[\w+-]+)?\s*([\s\S]*?)```", r"\1", text)
+    # links and images -> keep the label
+    text = re.sub(r"!?\[([^\]]+)\]\([^)]*\)", r"\1", text)
+    # headings
+    text = re.sub(r"^\s{0,3}#{1,6}\s+", "", text, flags=re.MULTILINE)
+    # bullets, numbered lists and block quotes at the start of a line
+    text = re.sub(r"^\s{0,3}(?:[-*+]\s+|\d+[.)]\s+|>\s?)", "", text, flags=re.MULTILINE)
+    # bold / italic / strikethrough / inline-code markers
+    text = re.sub(r"(\*\*|__|~~|`)", "", text)
+    text = re.sub(r"(?<!\w)[*_](?=\S)|(?<=\S)[*_](?!\w)", "", text)
+    return text.strip()
+
+
+def _tidy(value: str, max_sentences: int = 3, max_chars: int = 320) -> str:
+    """Keep a conversational reply short: one paragraph, a few sentences."""
+    text = _plain_text(value)
+    text = re.sub(r"\s*\n+\s*", " ", text)
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    text = " ".join(sentences[:max_sentences]).strip()
+    if len(text) > max_chars:
+        text = text[:max_chars].rsplit(" ", 1)[0].rstrip(",;:") + "…"
+    return text
+
+
+# ------------------------------------------------------------
+# respond: how the model talks when no task action is needed
+# ------------------------------------------------------------
+
+FALLBACK_RESPONSE = "I'm here. Tell me a task to add, or ask what to work on."
+
+RESPOND_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "respond",
+        "description": (
+            "Say something to the user WITHOUT changing or reading any task. Use it for "
+            "greetings, thanks, acknowledgments such as ok / okay / sure / cool / got it, "
+            "complaints or corrections, and for ONE short question when something essential "
+            "is missing (for example the user says 'add a task' but not which task). "
+            "One or two short, warm sentences in plain text. Never claim in it that a task "
+            "was added, changed, completed or deleted."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "The short reply to show the user.",
+                }
+            },
+            "required": ["message"],
+        },
+    },
+}
+
+
+def respond(user_id: str, args: dict) -> dict:
+    message = _tidy(args.get("message") or "", max_sentences=3)
+    return {"status": "replied", "reply": message or FALLBACK_RESPONSE}
+
+
 # The two recommendation tools are replaced by versions that also write the reply.
+# The schemas are the same dict objects as in agent_tools, so recommend_reply.install()
+# (called from main.py) still adds the "another" flag to them.
+TOOLS = [*_BASE_TOOLS, RESPOND_TOOL]
 TOOL_FUNCTIONS = {
     **_BASE_TOOL_FUNCTIONS,
     "recommend_task": recommend_task,
     "recommend_for_mood": recommend_for_mood,
+    "respond": respond,
 }
 
 # The prompt is STATIC on purpose: Groq caches an identical prompt prefix (gpt-oss
@@ -25,11 +99,27 @@ SYSTEM_PROMPT = """You are the assistant inside a personal task-management app. 
 
 THINK BEFORE YOU ACT
 
-1. What does the user actually want: add, change, finish, delete, look something up, get a suggestion, just talk, or something that is not about their tasks at all (then call decline_request, never answer it)?
+1. What does the user actually want: add, change, finish, delete, look something up, get a suggestion, just talk (greeting, thanks, acknowledgment, complaint), or something that is not about their tasks at all (then call decline_request, never answer it)?
 
-2. Which tool does that need? Is anything genuinely missing or ambiguous?
+2. Which tool does that need? If nothing needs doing, or one essential detail is missing, call respond. Is anything genuinely ambiguous?
 
 3. If the request is clear, act. Do not ask for confirmation of things the user already told you.
+
+WHEN NO ACTION IS NEEDED: USE respond
+
+- respond(message) is how you talk without touching any task. Use it for greetings, thanks, acknowledgments, complaints or corrections, and for ONE short question when something essential is missing.
+
+- Keep the message to one or two short sentences in plain text, in a warm, natural voice. Never claim inside respond that a task was added, changed, completed or deleted.
+
+- Acknowledgments are NOT requests. "ok", "okay", "okayyy", "sure", "suree", "cool", "nice", "alright", "thanks", "got it", "will do" (any spelling or stretched letters) -> respond with a friendly line, for example "Sounds good. Say the word when you want another suggestion or want to add something." Never suggest, complete, update or delete anything because of an acknowledgment.
+
+- If the user asks for the next suggestion in the same breath ("ok next", "sure, something else"), that is a request: recommend again with another=true.
+
+- Complaints or corrections ("I didn't ask for that", "why did you suggest that", "that's wrong") -> respond with a short apology and ask what they would like. Do not explain at length and do not call any other tool.
+
+- "Add a task", "add something", "remind me" with no task named -> respond with one short question asking what the task is (and when, if relevant). Never pass "add a task" itself to add_tasks.
+
+- Exception: if your previous message asked a question that is waiting for an answer (delete confirmation, duplicate, clash, past time, "mark as done?"), a short "yes", "no", "ok" or "skip it" answers THAT question. Use the matching tool, not respond.
 
 ADDING TASKS
 
@@ -43,7 +133,7 @@ ADDING TASKS
 
 - add_tasks writes the final reply itself (what was added, any problem, any question). Never add to it or repeat it.
 
-- Ask a question before adding only when you cannot tell WHAT the task is. Keep it to one short question.
+- If you cannot tell WHAT the task is, use respond to ask one short question instead of calling add_tasks.
 
 SIMILAR OR DUPLICATE TASKS
 
@@ -63,7 +153,7 @@ SIMILAR OR DUPLICATE TASKS
 
     add another / anyway / separate / yes add it -> add_separate
 
-- If the answer does not clearly match one of these, ask one short question.
+- If the answer does not clearly match one of these, use respond to ask one short question.
 
 EXACT-TIME CLASHES
 
@@ -84,6 +174,8 @@ EXACT-TIME CLASHES
 CHANGING, FINISHING AND DELETING
 
 - A clear command with all needed info ("Complete buy milk", "Change buy milk urgency to high") -> call the tool directly.
+
+- Only call complete_task when the user clearly says a task is done, finished or completed, or asks you to mark it. A suggestion you made is never a reason to complete anything.
 
 - When the user names a task, call list_tasks first to find its ID, then use that ID. Never put a task title or any guessed text in task_id or task_ids. If several tasks match, name them briefly and ask which one. Never guess.
 
@@ -117,15 +209,11 @@ SUGGESTIONS AND OVERVIEWS
 
 - If the user says how they feel or their energy ("I'm tired", "I have lots of energy") and wants a suggestion -> recommend_for_mood with the matching energy. Never ask about mood or energy yourself and never assume it.
 
-- Each recommended task has a reason: pinned = it is happening now; deadline_risk = the deadline is close, say it needs attention soon; energy_match = it suits how they feel; top_score = the best next pick. Give the reason in one short sentence.
+- The recommendation tools write the final reply themselves. Never add to it or repeat it.
 
-- For energy suggestions, recommend one task in natural plain text. Do not use markdown markers, headings, or a long introduction. Example: "Try Pay the bill. It's a quick, low-effort task due tomorrow." For high energy: "Try Draft the platform migration architecture. It is a good fit for a focused work session."
+- If the user asks for a different suggestion ("something else", "anything else", "another one", "what else", "next"), call the SAME recommendation tool again with another=true. The system remembers what was already shown. Never invent ids and never use list_tasks for this.
 
-- If the user wants a different suggestion, call the same tool again with exclude_ids set to the ids you already suggested.
-
-- If the list is empty, say nothing is pending right now.
-
-- If a recommendation tool returns no tasks, reply exactly: "Nothing needs attention right now." Do not ask about mood or energy.
+- A suggestion is only a suggestion. It never changes, completes or deletes any task. Only suggest when the user asks for a suggestion.
 
 - "What's on my plate today" / "give me my digest" / a general day overview -> daily_digest. If it lists overdue tasks, mention them in one short sentence.
 
@@ -133,7 +221,7 @@ SUGGESTIONS AND OVERVIEWS
 
 MESSAGES THAT ARE NOT ABOUT TASKS
 
-- Greetings and small talk ("hi", "thanks"): reply warmly with a useful invitation to continue (for example, "Hi! What should we work on?"). Call no tool. Do not invent the user's name.
+- Greetings and small talk ("hi", "thanks"): call respond with a warm line that invites them to continue (for example, "Hi! What should we work on?"). Do not invent the user's name.
 
 - General knowledge or trivia ("what is the capital of France?"), maths, coding help, writing, translation, news, or advice unrelated to the user's tasks: NEVER answer it, not even in one short line. Call decline_request with kind=off_topic.
 
@@ -186,11 +274,76 @@ QUICK_REPLY_TOOLS = {
     "decline_request",
     "recommend_task",
     "recommend_for_mood",
+    "respond",
 }
 
 # Errors that are already written for the user. Returning them directly avoids a
 # slow extra model step (and a retry loop where the model keeps guessing times).
 USER_FACING_ERROR_TOOLS = {"update_task", "resolve_pending", "complete_task"}
+
+# ------------------------------------------------------------
+# "Add a task for me": nothing to add yet. The model should ask via respond;
+# if it still sends this to add_tasks, replace the raw error with a helpful question.
+# ------------------------------------------------------------
+NOT_A_TASK_REPLY = (
+    "What task would you like to add? Tell me what it is and when, "
+    "for example \u201cCall Amit tomorrow at 4 PM\u201d."
+)
+
+
+def _is_not_a_task(reply: str) -> bool:
+    return (
+        reply.startswith("I couldn't add")
+        and reply.endswith("That doesn't look like a task.")
+        and "\n" not in reply
+    )
+
+
+# ------------------------------------------------------------
+# Guard for the one action that must never happen by accident.
+# The model decides what the user means; this only checks that the user
+# actually talked about finishing something before a task is completed.
+# ------------------------------------------------------------
+CONFIRM_COMPLETE_MARKER = "mark that task as done"
+CONFIRM_COMPLETE = (
+    "Do you want me to mark that task as done? Reply “yes” to confirm, "
+    "or tell me which task you finished."
+)
+_COMPLETE_WORDS = re.compile(
+    r"\b(done|complete|completed|completes|finish|finished|finishing|mark|tick|ticked|"
+    r"did|crossed? off|check(?:ed)? off|ho gaya|hogaya|kar liya|khatam)\b",
+    re.IGNORECASE,
+)
+_YES = re.compile(
+    r"^\s*(yes|yeah|yep|yup|y|ok|okay|sure|please do|do it|go ahead|haan|ha)\b",
+    re.IGNORECASE,
+)
+
+
+def _text(message) -> str:
+    content = message.get("content") if isinstance(message, dict) else ""
+    return content if isinstance(content, str) else str(content or "")
+
+
+def _completion_allowed(messages: list) -> bool:
+    last_user_index = -1
+    for index in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[index], dict) and messages[index].get("role") == "user":
+            last_user_index = index
+            break
+    if last_user_index < 0:
+        return False
+
+    last_user = _text(messages[last_user_index])
+    if _COMPLETE_WORDS.search(last_user):
+        return True
+
+    # the user answered "yes" to our own "mark as done?" question
+    for index in range(last_user_index - 1, -1, -1):
+        message = messages[index]
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            return CONFIRM_COMPLETE_MARKER in _text(message) and bool(_YES.match(last_user))
+    return False
 
 
 def _is_user_facing_error(message: str) -> bool:
@@ -206,23 +359,6 @@ def execute_tool(tool_name: str, args: dict, user_id: str):
     if tool_name not in TOOL_FUNCTIONS:
         raise ValueError(f"Unknown tool: {tool_name}")
     return TOOL_FUNCTIONS[tool_name](user_id, args)
-
-
-def _plain_text(value: str) -> str:
-    """Remove common Markdown syntax before a plain-text chat bubble displays it."""
-    text = value or ""
-    # fenced code blocks -> keep the inner text
-    text = re.sub(r"```(?:[\w+-]+)?\s*([\s\S]*?)```", r"\1", text)
-    # links and images -> keep the label
-    text = re.sub(r"!?\[([^\]]+)\]\([^)]*\)", r"\1", text)
-    # headings
-    text = re.sub(r"^\s{0,3}#{1,6}\s+", "", text, flags=re.MULTILINE)
-    # bullets, numbered lists and block quotes at the start of a line
-    text = re.sub(r"^\s{0,3}(?:[-*+]\s+|\d+[.)]\s+|>\s?)", "", text, flags=re.MULTILINE)
-    # bold / italic / strikethrough / inline-code markers
-    text = re.sub(r"(\*\*|__|~~|`)", "", text)
-    text = re.sub(r"(?<!\w)[*_](?=\S)|(?<=\S)[*_](?!\w)", "", text)
-    return text.strip()
 
 
 def _context_message() -> dict:
@@ -246,6 +382,8 @@ def run_agent(user_id: str, messages: list) -> tuple[str, bool]:
     # static prompt first (cacheable), then the small dynamic context, then the chat
     convo = [{"role": "system", "content": SYSTEM_PROMPT}, _context_message()]
     convo += messages
+
+    completion_allowed = _completion_allowed(messages)
 
     tasks_changed = False
     seen_calls = {}  # per-request cache so an identical mutating call never runs twice
@@ -276,9 +414,12 @@ def run_agent(user_id: str, messages: list) -> tuple[str, bool]:
 
         if not msg.tool_calls:
             logger.info("AGENT total=%.2fs steps=%d", time.perf_counter() - started, step + 1)
+            text = _plain_text(msg.content)
+            if step == 0:
+                # a purely conversational reply (no tool ran): keep it short
+                text = _tidy(text, max_sentences=4, max_chars=420)
             return (
-                _plain_text(msg.content)
-                or "Sorry, I didn't catch that — could you rephrase?",
+                text or "Sorry, I didn't catch that — could you rephrase?",
                 tasks_changed,
             )
 
@@ -290,37 +431,47 @@ def run_agent(user_id: str, messages: list) -> tuple[str, bool]:
             try:
                 args = json.loads(tc.function.arguments)
                 logger.info("TOOL call name=%s", tc.function.name)
-                key = (tc.function.name, json.dumps(args, sort_keys=True))
 
-                if tc.function.name in MUTATING_TOOLS and key in seen_calls:
-                    result = seen_calls[key]
-                    logger.info("TOOL replay_cached name=%s", tc.function.name)
+                if tc.function.name == "complete_task" and not completion_allowed:
+                    # The user did not say anything about finishing a task.
+                    logger.warning("GUARD complete_task blocked: the user did not ask to complete")
+                    result = {"status": "needs_confirmation", "reply": CONFIRM_COMPLETE}
+                    if len(msg.tool_calls) == 1:
+                        quick = CONFIRM_COMPLETE
                 else:
-                    result = execute_tool(tc.function.name, args, user_id)
+                    key = (tc.function.name, json.dumps(args, sort_keys=True))
 
-                    if tc.function.name in MUTATING_TOOLS:
-                        seen_calls[key] = result
+                    if tc.function.name in MUTATING_TOOLS and key in seen_calls:
+                        result = seen_calls[key]
+                        logger.info("TOOL replay_cached name=%s", tc.function.name)
+                    else:
+                        result = execute_tool(tc.function.name, args, user_id)
 
-                        if tc.function.name == "delete_task":
-                            tasks_changed = result.get("status") == "deleted"
-                        elif tc.function.name == "update_task" and isinstance(result, dict):
-                            tasks_changed = tasks_changed or result.get("status") != "needs_decision"
-                        else:
-                            tasks_changed = True
+                        if tc.function.name in MUTATING_TOOLS:
+                            seen_calls[key] = result
 
-                if (
-                    len(msg.tool_calls) == 1
-                    and tc.function.name in QUICK_REPLY_TOOLS
-                    and isinstance(result, dict)
-                    and result.get("reply")
-                ):
-                    quick = result["reply"]
-                elif (
-                    len(msg.tool_calls) == 1
-                    and tc.function.name in {"recommend_task", "recommend_for_mood"}
-                    and not result
-                ):
-                    quick = "Nothing needs attention right now."
+                            if tc.function.name == "delete_task":
+                                tasks_changed = result.get("status") == "deleted"
+                            elif tc.function.name == "update_task" and isinstance(result, dict):
+                                tasks_changed = tasks_changed or result.get("status") != "needs_decision"
+                            else:
+                                tasks_changed = True
+
+                    if (
+                        len(msg.tool_calls) == 1
+                        and tc.function.name in QUICK_REPLY_TOOLS
+                        and isinstance(result, dict)
+                        and result.get("reply")
+                    ):
+                        quick = result["reply"]
+                        if tc.function.name == "add_tasks" and _is_not_a_task(quick):
+                            quick = NOT_A_TASK_REPLY
+                    elif (
+                        len(msg.tool_calls) == 1
+                        and tc.function.name in {"recommend_task", "recommend_for_mood"}
+                        and not result
+                    ):
+                        quick = "Nothing needs attention right now."
 
             except (ValueError, LookupError) as e:
                 result = {"error": str(e)}

@@ -19,7 +19,9 @@ import {
   useAudioRecorder,
 } from "expo-audio"
 import { File } from "expo-file-system"
+import { Ionicons } from "@expo/vector-icons"
 import { chatSuggestions } from "../data"
+import MessageActions, { type Reason } from "../components/MessageActions"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useApp } from "../context/AppContext"
 import type { ChatMessage } from "../data"
@@ -28,6 +30,9 @@ import { apiFetch } from "../lib/apiClient"
 import { supabase } from "../lib/supabase"
 
 const MAX_RECORDING_MS = 60_000
+const ERROR_TEXT = "Something went wrong. Please try again."
+
+type FeedbackState = Record<string, { vote?: "up" | "down"; reason?: Reason }>
 
 function formatRecordingTime(seconds: number) {
   const minutes = Math.floor(seconds / 60)
@@ -42,51 +47,58 @@ let chatCache: {
 
 export default function ChatScreen() {
   const {
-  t,
-  user,
-  refreshTasks,
-} = useApp()
+    t,
+    user,
+    refreshTasks,
+  } = useApp()
 
-const router = useRouter()
+  const router = useRouter()
 
-const { prefill } = useLocalSearchParams<{
-  prefill?: string
-}>()
+  const { prefill } = useLocalSearchParams<{
+    prefill?: string
+  }>()
 
   const insets = useSafeAreaInsets()
 
   const [chatInput, setChatInput] = useState(prefill ?? "")
 
-const firstName = user.name ? user.name.split(" ")[0] : ""
+  const firstName = user.name ? user.name.split(" ")[0] : ""
 
-const initial: ChatMessage = {
-  id: "init",
-  role: "ai",
-  text: firstName
-    ? `Hi ${firstName}. Add a task or ask me anything about your day.`
-    : "Hi. Add a task or ask me anything about your day.",
-}
-
-const [messages, setMessages] = useState<ChatMessage[]>(() =>
-  chatCache && chatCache.email === user.email
-    ? chatCache.messages
-    : [initial]
-)
-
-useEffect(() => {
-  chatCache = {
-    email: user.email,
-    messages,
+  const initial: ChatMessage = {
+    id: "init",
+    role: "ai",
+    text: firstName
+      ? `Hi ${firstName}. Add a task or ask me anything about your day.`
+      : "Hi. Add a task or ask me anything about your day.",
   }
-}, [messages, user.email])
+
+  const [messages, setMessages] = useState<ChatMessage[]>(() =>
+    chatCache && chatCache.email === user.email
+      ? chatCache.messages
+      : [initial]
+  )
+
+  useEffect(() => {
+    chatCache = {
+      email: user.email,
+      messages,
+    }
+  }, [messages, user.email])
 
   const [chatActive, setChatActive] = useState(
-  Boolean(prefill) || messages.length > 1
-)
+    Boolean(prefill) || messages.length > 1
+  )
   const [sending, setSending] = useState(false)
   const [isRecording, setIsRecording] = useState(false)
   const [isTranscribing, setIsTranscribing] = useState(false)
   const [recordingSeconds, setRecordingSeconds] = useState(0)
+
+  // WhatsApp-style: tap an assistant bubble to show its actions
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [feedback, setFeedback] = useState<FeedbackState>({})
+  // scroll to the bottom only after sending, not when an action bar opens
+  const autoScroll = useRef(true)
+
   const scrollRef = useRef<ScrollView>(null)
   const recorder = useAudioRecorder({
     ...RecordingPresets.HIGH_QUALITY,
@@ -284,67 +296,136 @@ useEffect(() => {
   }
 
   const sendMessage = async (text: string) => {
-  const trimmed = text.trim()
+    const trimmed = text.trim()
 
-  if (!trimmed || sending || isRecording || isTranscribing) return
+    if (!trimmed || sending || isRecording || isTranscribing) return
 
-  const userMessage: ChatMessage = {
-    id: `u${Date.now()}`,
-    role: "user",
-    text: trimmed,
+    const userMessage: ChatMessage = {
+      id: `u${Date.now()}`,
+      role: "user",
+      text: trimmed,
+    }
+
+    autoScroll.current = true
+    setSelectedId(null)
+    setMessages((previous) => [...previous, userMessage])
+    setChatInput("")
+    setChatActive(true)
+    setSending(true)
+
+    try {
+      const result = await apiFetch("/agent/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          messages: [
+            ...messages
+              .filter((message) => message.id !== "init")
+              .map((message) => ({
+                role: message.role === "ai" ? "assistant" : "user",
+                content: message.text,
+              })),
+            {
+              role: "user",
+              content: trimmed,
+            },
+          ],
+        }),
+      })
+
+      setMessages((previous) => [
+        ...previous,
+        {
+          id: `a${Date.now()}`,
+          role: "ai",
+          text: result.reply,
+        },
+      ])
+
+      if (result.tasks_changed) {
+        await refreshTasks()
+      }
+    } catch (error) {
+      console.error("Chat request failed:", error)
+
+      setMessages((previous) => [
+        ...previous,
+        {
+          id: `a${Date.now()}`,
+          role: "ai",
+          text: ERROR_TEXT,
+        },
+      ])
+    } finally {
+      setSending(false)
+    }
   }
 
-  setMessages((previous) => [...previous, userMessage])
-  setChatInput("")
-  setChatActive(true)
-  setSending(true)
+  const toggleActions = (id: string) => {
+    autoScroll.current = false
+    setSelectedId((current) => (current === id ? null : id))
+  }
 
-  try {
-    const result = await apiFetch("/agent/chat", {
+  const sendFeedback = (
+    message: ChatMessage,
+    userText: string | undefined,
+    value: "up" | "down",
+    reason?: Reason
+  ) => {
+    void apiFetch("/feedback/event", {
       method: "POST",
       body: JSON.stringify({
-        messages: [
-        ...messages
-          .filter((message) => message.id !== "init")
-          .map((message) => ({
-            role: message.role === "ai" ? "assistant" : "user",
-            content: message.text,
-          })),
-        {
-          role: "user",
-          content: trimmed,
-        },
-      ],
+        value,
+        reason,
+        message_id: message.id,
+        reply_text: message.text,
+        user_message: userText,
       }),
-    })
-
-    setMessages((previous) => [
-      ...previous,
-      {
-        id: `a${Date.now()}`,
-        role: "ai",
-        text: result.reply,
-      },
-    ])
-
-    if (result.tasks_changed) {
-      await refreshTasks()
-    }
-  } catch (error) {
-    console.error("Chat request failed:", error)
-
-    setMessages((previous) => [
-      ...previous,
-      {
-        id: `a${Date.now()}`,
-        role: "ai",
-        text: "Something went wrong. Please try again.",
-      },
-    ])
-  } finally {
-    setSending(false)
+    }).catch(() => undefined)
   }
-}
+
+  const handleVote = (
+    message: ChatMessage,
+    userText: string | undefined,
+    value: "up" | "down"
+  ) => {
+    if (feedback[message.id]?.vote === value) return
+    setFeedback((previous) => ({ ...previous, [message.id]: { vote: value } }))
+    sendFeedback(message, userText, value)
+  }
+
+  const handleReason = (
+    message: ChatMessage,
+    userText: string | undefined,
+    reason: Reason
+  ) => {
+    setFeedback((previous) => ({
+      ...previous,
+      [message.id]: { vote: "down", reason },
+    }))
+    sendFeedback(message, userText, "down", reason)
+  }
+
+  // Open the feedback screen with the last 6 real chat messages.
+  // The user decides there whether to attach them (off by default).
+  const openFeedback = () => {
+    const recent = messages
+      .filter((message) => message.id !== "init" && message.text !== ERROR_TEXT)
+      .slice(-6)
+      .map((message) => ({
+        role: message.role === "ai" ? "assistant" : "user",
+        content: message.text.slice(0, 300),
+      }))
+
+    router.push({
+      pathname: "/feedback",
+      params: recent.length ? { context: JSON.stringify(recent) } : {},
+    })
+  }
+
+  // STYLE: where the user writes how the assistant should talk to them
+  const openStyle = () => {
+    router.push("/ai-style")
+  }
 
   return (
     <KeyboardAvoidingView
@@ -410,6 +491,40 @@ useEffect(() => {
             Tasks and planning
           </Text>
         </View>
+
+        {/* STYLE: reply style entry point */}
+        <Pressable
+          onPress={openStyle}
+          hitSlop={8}
+          style={({ pressed }) => [
+            styles.feedbackButton,
+            {
+              backgroundColor: t.surface,
+              opacity: pressed ? 0.6 : 1,
+            },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="Reply style"
+        >
+          <Ionicons name="options-outline" size={18} color={t.muted} />
+        </Pressable>
+
+        {/* Feedback entry point */}
+        <Pressable
+          onPress={openFeedback}
+          hitSlop={8}
+          style={({ pressed }) => [
+            styles.feedbackButton,
+            {
+              backgroundColor: t.surface,
+              opacity: pressed ? 0.6 : 1,
+            },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="Send feedback"
+        >
+          <Ionicons name="chatbox-ellipses-outline" size={18} color={t.muted} />
+        </Pressable>
       </View>
 
       {/* Messages */}
@@ -419,12 +534,24 @@ useEffect(() => {
         contentContainerStyle={styles.messagesContent}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
-        onContentSizeChange={() =>
-          scrollRef.current?.scrollToEnd({ animated: true })
-        }
+        onContentSizeChange={() => {
+          if (autoScroll.current) {
+            scrollRef.current?.scrollToEnd({ animated: true })
+          }
+        }}
       >
-        {messages.map((message) => {
+        {messages.map((message, messageIndex) => {
           const isUser = message.role === "user"
+          const previousUserText = messages
+            .slice(0, messageIndex)
+            .reverse()
+            .find((item) => item.role === "user")?.text
+          const canReact =
+            !isUser &&
+            message.id !== "init" &&
+            message.text !== ERROR_TEXT
+          const isSelected = selectedId === message.id
+          const messageFeedback = feedback[message.id]
 
           return (
             <View
@@ -437,8 +564,10 @@ useEffect(() => {
               ]}
             >
               <View style={styles.messageWrapper}>
-                <View
-                  style={[
+                <Pressable
+                  disabled={!canReact}
+                  onPress={() => toggleActions(message.id)}
+                  style={({ pressed }) => [
                     styles.messageBubble,
                     {
                       backgroundColor: isUser
@@ -448,6 +577,8 @@ useEffect(() => {
                       borderWidth: isUser ? 0 : 1,
 
                       borderColor: t.border,
+
+                      opacity: pressed && canReact ? 0.85 : 1,
                     },
                   ]}
                 >
@@ -461,19 +592,34 @@ useEffect(() => {
                   >
                     {message.text}
                   </Text>
-                </View>
+                </Pressable>
+
+                {canReact && isSelected && (
+                  <MessageActions
+                    text={message.text}
+                    vote={messageFeedback?.vote}
+                    reason={messageFeedback?.reason}
+                    onVote={(value) => handleVote(message, previousUserText, value)}
+                    onReason={(reason) => handleReason(message, previousUserText, reason)}
+                    color={t.text}
+                    mutedColor={t.muted}
+                    surfaceColor={t.surface2}
+                    borderColor={t.border}
+                    activeColor={t.primary}
+                  />
+                )}
 
                 {/* Referenced task */}
                 {message.taskRef && (
                   <Pressable
                     onPress={() =>
-                    router.push({
+                      router.push({
                         pathname: "/task-details",
                         params: {
-                        id: message.taskRef!.id,
-                        section: message.taskRef!.section,
+                          id: message.taskRef!.id,
+                          section: message.taskRef!.section,
                         },
-                    })
+                      })
                     }
                     style={({ pressed }) => [
                       styles.taskReference,
@@ -704,6 +850,15 @@ const styles = StyleSheet.create({
   },
 
   headerText: {
+    flex: 1, // pushes the two icons to the right edge
+    justifyContent: "center",
+  },
+
+  feedbackButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
     justifyContent: "center",
   },
 

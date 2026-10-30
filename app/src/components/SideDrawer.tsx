@@ -1,5 +1,5 @@
 import React from 'react'
-import { View, Text, Pressable, StyleSheet, Switch } from 'react-native'
+import { View, Text, Pressable, StyleSheet, Switch, Alert } from 'react-native'
 import { LinearGradient } from 'expo-linear-gradient'
 import { useRouter } from 'expo-router'
 import { SafeAreaView } from 'react-native-safe-area-context'
@@ -13,7 +13,14 @@ export default function SideDrawer() {
 
   const items = [
     { label: 'History', icon: Archive, onTap: () => router.push('/history') },
-    { label: 'Notification Settings', icon: Bell, onTap: () => {} },
+    {
+      label: 'Notification Settings',
+      icon: Bell,
+      onTap: () => Alert.alert(
+        'Notifications coming soon',
+        'Notification settings will be available in a future update.'
+      ),
+    },
   ]
 
   const handleLogout = async () => {

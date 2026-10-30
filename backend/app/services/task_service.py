@@ -11,6 +11,7 @@ from postgrest.exceptions import APIError
 from app.services.recommendation import rank, build_dashboard, next_scheduled
 from app.services.recurrence import next_occurrence, validate_task_recurrence
 from app.services.timeutil import now_local, now_local_naive, to_local
+from app.services.feedback_log import log_task_edit, log_task_delete  # FEEDBACK
 from app.db.supabase_client import supabase
 
 
@@ -85,7 +86,8 @@ def merge_into_task(user_id: str, task_id: str, item: str) -> dict:
     item = item.strip()
     new_brief = f"{brief}; {item}" if brief else item
 
-    update_task(user_id, task["id"], {"brief": new_brief})
+    # FEEDBACK: a merge is a system edit, not a correction by the user
+    update_task(user_id, task["id"], {"brief": new_brief}, log_feedback=False)
 
     return {"status": "merged", "title": task["title"]}
 
@@ -190,7 +192,12 @@ def list_tasks(
     return result.data
 
 
-def update_task(user_id: str, task_id: str, updates: dict) -> dict:
+def update_task(
+    user_id: str,
+    task_id: str,
+    updates: dict,
+    log_feedback: bool = True,  # FEEDBACK
+) -> dict:
     existing = get_task(user_id, task_id)
 
     if not existing:
@@ -242,6 +249,10 @@ def update_task(user_id: str, task_id: str, updates: dict) -> dict:
 
     if not result.data:
         raise ValueError("Failed to update task")
+
+    # FEEDBACK: record corrections made soon after the task was created
+    if log_feedback:
+        log_task_edit(user_id, existing, updates)
 
     return result.data[0]
 
@@ -409,6 +420,10 @@ def delete_tasks(user_id: str, task_ids: list) -> list:
         .eq("user_id", user_id)
         .execute()
     )
+
+    # FEEDBACK: the delete returns the removed rows, so no extra query is needed
+    for row in result.data or []:
+        log_task_delete(user_id, row)
 
     return result.data
 
