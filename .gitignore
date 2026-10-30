@@ -17,3 +17,14 @@ node_modules/
 .vscode/
 .claude/
 CLAUDE.md.~lock.*#
+
+# Local tests and test configuration
+backend/pytest.ini
+backend/tests/
+backend/app/services/test_*.py
+backend/app/services/Test_*.py
+
+
+# Local backend-only files
+backend/time
+backend/requirements-dev.txt
