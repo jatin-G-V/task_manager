@@ -1,0 +1,30 @@
+
+{
+  "cli": {
+    "version": ">= 27.2.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal"
+    },
+    "preview": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_SUPABASE_URL" : "https://jyypmrqsspmqvxsowkrf.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_KEY" : "sb_publishable_rOK2RJyr57lqmy96hdxhDQ_y0eJxEic",
+        "EXPO_PUBLIC_API_URL" : "https://task-manager-412l.onrender.com"
+      }
+    },
+    "production": {
+      "autoIncrement": true
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

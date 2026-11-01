@@ -129,7 +129,7 @@ def _update_one(user_id: str, task_id: str, updates: dict) -> dict:
 def _digest_view(digest: dict) -> dict:
     return {
         key: [_task_view(task) for task in digest.get(key, [])]
-        for key in ("due_today", "at_risk", "overdue")
+        for key in ("due_today", "scheduled_today", "at_risk", "overdue")
     } | {
         "suggested_focus": (
             _task_view(digest["suggested_focus"])

@@ -482,6 +482,7 @@ def get_daily_digest(user_id: str) -> dict:
 
     return {
         "due_today": d["due_today"],
+        "scheduled_today": d["scheduled_today"],
         "at_risk": d["at_risk"],
         "overdue": d["overdue"],
         "suggested_focus": (

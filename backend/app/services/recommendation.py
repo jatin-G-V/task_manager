@@ -508,11 +508,35 @@ def build_dashboard(
         for task, _ in overdue_entries
     ]
 
+    overdue_ids = {task["id"] for task, _ in overdue_entries}
+
+    # Scheduled tasks later today are not eligible for ranking until their
+    # pinned window opens (or their vague window starts). Keep them in a
+    # separate additive list for the Daily Digest.
+    scheduled_today_tasks = []
+    for task in tasks:
+        start = _dt(task.get("scheduled_start"))
+        if (
+            task.get("status") in INACTIVE_STATUSES
+            or task.get("is_blocked")
+            or task.get("schedule_type") != "scheduled"
+            or start is None
+            or start.date() != now.date()
+            or task["id"] in active_ids
+            or task["id"] in overdue_ids
+        ):
+            continue
+        scheduled_today_tasks.append((start, task))
+
+    scheduled_today_tasks.sort(key=lambda item: item[0])
+    scheduled_today = [
+        {**_build_overdue_entry(task), "reason": "upcoming"}
+        for _, task in scheduled_today_tasks
+    ]
+
     # --------------------------------------------------------
     # UPCOMING
     # --------------------------------------------------------
-
-    overdue_ids = {t["id"] for t, _ in overdue_entries}
 
     upcoming_tasks = [
         t for t in tasks
@@ -604,6 +628,7 @@ def build_dashboard(
     counts = {
         "overdue": len(overdue),
         "due_today": len(due_today),
+        "scheduled_today": len(scheduled_today),
         "at_risk": len(at_risk),
         "later": len(later),
         "upcoming": len(upcoming),
@@ -619,6 +644,7 @@ def build_dashboard(
         "next_upcoming": next_upcoming,
         "next_upcoming_explicit": next_upcoming_explicit,
         "due_today": due_today,
+        "scheduled_today": scheduled_today,
         "at_risk": at_risk,
         "counts": counts,
     }

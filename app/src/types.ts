@@ -23,7 +23,7 @@ export interface Task {
   estimatedTime?: string
   scheduledTime?: string
   atRisk?: boolean
-  reason?: 'pinned' | 'deadline_risk' | 'energy_match' | 'top_score'
+  reason?: 'pinned' | 'deadline_risk' | 'energy_match' | 'top_score' | 'upcoming'
   dueToday?: boolean
   effort?: Effort
   urgency?: Urgency
@@ -102,6 +102,7 @@ export interface AppContextType {
   rankedTasks: Task[]
   overdueTasks: Task[]
   dueTodayTasks: Task[]
+  scheduledTodayTasks: Task[]
   atRiskTasks: Task[]
   dueTodayCount: number
   atRiskCount: number

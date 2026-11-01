@@ -142,6 +142,7 @@ export function AppProvider({ children }: AppProviderProps) {
   const [overdueTasks, setOverdueTasks] = useState<Task[]>([])
   const [suggestedList, setSuggestedList] = useState<Task[]>([])
   const [dueTodayTasks, setDueTodayTasks] = useState<Task[]>([])
+  const [scheduledTodayTasks, setScheduledTodayTasks] = useState<Task[]>([])
   const [atRiskTasks, setAtRiskTasks] = useState<Task[]>([])
 
   // -----------------------------
@@ -186,6 +187,7 @@ export function AppProvider({ children }: AppProviderProps) {
     setSuggestedList([])
     setSuggestedTask(null)
     setDueTodayTasks([])
+    setScheduledTodayTasks([])
     setAtRiskTasks([])
   }
 
@@ -273,6 +275,7 @@ export function AppProvider({ children }: AppProviderProps) {
     setSuggestedList(suggested)
     setSuggestedTask(suggested[0] ?? null)
     setDueTodayTasks(toTasks(d.due_today))
+    setScheduledTodayTasks(toTasks(d.scheduled_today ?? []))
     setAtRiskTasks(toTasks(d.at_risk))
   }
 
@@ -639,6 +642,8 @@ export function AppProvider({ children }: AppProviderProps) {
     overdueTasks,
 
     dueTodayTasks,
+
+    scheduledTodayTasks,
 
     atRiskTasks,
 

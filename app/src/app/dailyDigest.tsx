@@ -17,12 +17,14 @@ import {
   Sparkles,
 } from "../components/icons";
 import { timingLabel } from "../utils/taskFormat";
+import { whenLabel } from "../utils/taskTime";
 
 export default function DailyDigestScreen() {
   const router = useRouter();
   const {
     t,
     tasks,
+    scheduledTodayTasks,
     suggestedTask,
   } = useApp();
 
@@ -218,6 +220,121 @@ export default function DailyDigestScreen() {
                         ]}
                       >
                         {timingLabel(task).text}
+                      </Text>
+                    </View>
+                  </View>
+
+                  <ChevronRight
+                    size={15}
+                    color={t.muted}
+                  />
+                </Pressable>
+              ))}
+            </View>
+          )}
+        </View>
+
+        {/* Scheduled Later Today */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <View
+              style={[
+                styles.dot,
+                {
+                  backgroundColor: t.primary,
+                },
+              ]}
+            />
+
+            <Text
+              style={[
+                styles.sectionTitle,
+                {
+                  color: t.muted,
+                },
+              ]}
+            >
+              SCHEDULED LATER TODAY
+            </Text>
+
+            <View
+              style={[
+                styles.countBadge,
+                {
+                  backgroundColor: `${t.primary}15`,
+                },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.countText,
+                  {
+                    color: t.primary,
+                  },
+                ]}
+              >
+                {scheduledTodayTasks.length}
+              </Text>
+            </View>
+          </View>
+
+          {scheduledTodayTasks.length === 0 ? (
+            <Text
+              style={[
+                styles.emptyText,
+                {
+                  color: t.muted,
+                },
+              ]}
+            >
+              Nothing else scheduled today
+            </Text>
+          ) : (
+            <View style={styles.taskList}>
+              {scheduledTodayTasks.map((task) => (
+                <Pressable
+                  key={task.id}
+                  onPress={() =>
+                    router.push(`/task-details?id=${task.id}&section=${task.section}`)
+                  }
+                  style={({ pressed }) => [
+                    styles.taskCard,
+                    {
+                      backgroundColor: t.surface,
+                      borderColor: t.border,
+                    },
+                    pressed && styles.cardPressed,
+                  ]}
+                >
+                  <View style={styles.taskContent}>
+                    <Text
+                      numberOfLines={2}
+                      style={[
+                        styles.taskTitle,
+                        {
+                          color: t.text,
+                        },
+                      ]}
+                    >
+                      {task.title}
+                    </Text>
+
+                    <View style={styles.timingRow}>
+                      <Clock
+                        size={12}
+                        color={t.primary}
+                      />
+
+                      <Text
+                        numberOfLines={1}
+                        style={[
+                          styles.timingText,
+                          {
+                            color: t.primary,
+                          },
+                        ]}
+                      >
+                        {whenLabel(task)}
                       </Text>
                     </View>
                   </View>
